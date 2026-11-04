@@ -11,7 +11,7 @@ CLIPS = ROOT / "tests" / "audio" / "candidate"
 
 def test_committed_clips_are_16k_mono_and_match_answers():
     answers = json.loads((CLIPS / "answers.json").read_text())
-    assert [a["id"] for a in answers] == [f"a{i:02d}" for i in range(12)]
+    assert [a["id"] for a in answers] == [f"a{i:02d}" for i in range(13)]   # a12: the audio check's line
     wavs = sorted(CLIPS.glob("a*.wav"))
     assert [w.stem for w in wavs] == [a["id"] for a in answers]
     for w in wavs:

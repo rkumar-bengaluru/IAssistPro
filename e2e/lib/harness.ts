@@ -1,8 +1,8 @@
 // Spoken e2e harness: one real session through the running service, with the browser's fake microphone
 // playing a generated session WAV (scripts/make_session_wav.py → e2e/out/).
 import { spawnSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import Ajv from "ajv";
 
@@ -30,8 +30,59 @@ export async function health(): Promise<any> {
 
 export type SessionRun = {
   result: any; gaps: number[]; firstBotAudioMs: number | null; captions: { user: number; bot: number }; createMs: number;
-  talkOverMs: number; llmRuns: number | null;
+  talkOverMs: number; llmRuns: number | null; server: any;
 };
+
+const FAKE_MIC_ARGS = (wav: string) => [
+  "--use-fake-ui-for-media-stream",
+  "--use-fake-device-for-media-stream",
+  `--use-file-for-fake-audio-capture=${resolve(wav)}%noloop`,
+  "--autoplay-policy=no-user-gesture-required",
+];
+
+// A 48 kHz mono PCM16 WAV of digital silence: the fake mic of a dead or virtual device.
+export function writeSilentWav(path: string, seconds: number): void {
+  const sr = 48000, n = Math.round(sr * seconds), data = n * 2;
+  const b = Buffer.alloc(44 + data);
+  b.write("RIFF", 0); b.writeUInt32LE(36 + data, 4); b.write("WAVE", 8);
+  b.write("fmt ", 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22);
+  b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34);
+  b.write("data", 36); b.writeUInt32LE(data, 40);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, b);
+}
+
+export type CheckRun = { server: any; connectedAtMs: number; finalStatus: any };
+
+// One audio check through the running service: POST /checks, the dev client in check mode, then end and read status.
+export async function runCheck(opts: { wav: string; durS: number; channel: string }): Promise<CheckRun> {
+  const created = await fetch(`${BASE}/checks`, { method: "POST" });
+  if (created.status !== 201) throw new Error(`check create failed: ${created.status} ${await created.text()}`);
+  const { check_id: id, connect } = await created.json();
+  const browser = await chromium.launch({
+    headless: true,
+    ...(opts.channel !== "chromium" ? { channel: opts.channel } : {}),
+    args: FAKE_MIC_ARGS(opts.wav),
+  });
+  try {
+    const page = await browser.newPage();
+    page.on("console", (m) => { if (m.text().startsWith("[iassist]")) console.log(m.text()); });
+    const url = `${BASE}/dev/client?check=${id}&token=${encodeURIComponent(connect.token)}&dur=${opts.durS}`;
+    await page.goto(url);
+    await page.waitForFunction(() => (window as any).iassist?.done, null, { timeout: (opts.durS + 60) * 1000, polling: 250 });
+    const browserSide = await page.evaluate(() => {
+      const s = (window as any).iassist;
+      return { server: s.server, connectedAtMs: s.connectedAt };
+    });
+    const end = await fetch(`${BASE}/checks/${id}/end`, { method: "POST" });
+    if (end.status !== 202) throw new Error(`check end failed: ${end.status}`);
+    const finalStatus = await (await fetch(`${BASE}/checks/${id}`)).json();
+    return { ...browserSide, finalStatus };
+  } finally {
+    await browser.close();
+    await fetch(`${BASE}/checks/${id}/end`, { method: "POST" });
+  }
+}
 
 // The service's own content-free "session_end ... llm_runs=N" log line for the session that just ended.
 export function llmRunsFromLogs(sinceIso: string): number | null {
@@ -54,12 +105,7 @@ export async function runSession(opts: { brief: any; wav: string; durS: number; 
   const browser = await chromium.launch({
     headless: true,
     ...(opts.channel !== "chromium" ? { channel: opts.channel } : {}),
-    args: [
-      "--use-fake-ui-for-media-stream",
-      "--use-fake-device-for-media-stream",
-      `--use-file-for-fake-audio-capture=${resolve(opts.wav)}%noloop`,
-      "--autoplay-policy=no-user-gesture-required",
-    ],
+    args: FAKE_MIC_ARGS(opts.wav),
   });
   let ender: NodeJS.Timeout | undefined;
   try {
@@ -78,7 +124,8 @@ export async function runSession(opts: { brief: any; wav: string; durS: number; 
     await page.waitForFunction(() => (window as any).iassist?.done, null, { timeout: (opts.durS + 90) * 1000, polling: 500 });
     const browserSide = await page.evaluate(() => {
       const s = (window as any).iassist;
-      return { gaps: s.gaps, firstBotAudioMs: s.firstBotAudioMs, captions: s.captions, talkOverMs: s.talkOverMs };
+      return { gaps: s.gaps, firstBotAudioMs: s.firstBotAudioMs, captions: s.captions, talkOverMs: s.talkOverMs,
+               server: s.server };
     });
     // The page left (dur) or the server ended the call; make sure the session finishes either way.
     let status: any;

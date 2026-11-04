@@ -1,7 +1,9 @@
 """Voice the invented candidate's answers (tests/audio/candidate/answers.json) with Kokoro am_michael and write
 16 kHz mono PCM16 clips aNN.wav next to it. Run in the dev container: ./scripts/dtest.sh python scripts/gen_candidate_clips.py
+(`--only a12,a13` voices just those ids and leaves the other clips untouched).
 """
 
+import argparse
 import json
 import os
 from pathlib import Path
@@ -16,6 +18,10 @@ VOICE = "am_michael"
 
 
 def main() -> None:
+    p = argparse.ArgumentParser()
+    p.add_argument("--only", default="", help="comma-separated ids to voice (default: all)")
+    only = {x for x in p.parse_args().only.split(",") if x}
+
     from kokoro_onnx import Kokoro
 
     from iassistpro.assets import _fetch_kokoro
@@ -29,6 +35,8 @@ def main() -> None:
         model = kdir / "kokoro-v1.0.int8.onnx"
     k = Kokoro(str(model), str(kdir / "voices-v1.0.bin"))
     for a in json.loads((CLIPS / "answers.json").read_text()):
+        if only and a["id"] not in only:
+            continue
         samples, sr = k.create(a["text"], voice=VOICE, speed=1.0, lang="en-us")
         clip = soxr.resample(np.asarray(samples, dtype=np.float32), sr, 16000)
         sf.write(CLIPS / f"{a['id']}.wav", clip, 16000, subtype="PCM_16")
