@@ -2,7 +2,8 @@
 
 transport → level monitor → STT → user aggregator (the interview's turn rules) → CheckController → TTS → output.
 The service speaks a fixed sentence; on the browser's `listen` it sends the candidate's next turn back as `heard`.
-Nothing is stored, recorded or billed, and no LLM is ever built: this module must not import `make_llm`.
+Nothing is stored, recorded or billed, no LLM is ever built (this module must not import `make_llm`), and speech is
+always local (whisper / piper or kokoro), even when interviews use a paid provider.
 """
 
 import asyncio
@@ -21,12 +22,23 @@ from pipecat.workers.runner import WorkerRunner
 from .config import Settings
 from .levels import InputLevelMonitor
 from .logs import log_event
-from .providers import make_stt, make_tts, make_turn_strategies
+from .providers import make_stt, make_tts, make_turn_strategies, spec
 
 CHECK_PROMPT = "This is your interviewer. If you can hear me, press 'I heard it'."
 CHECK_MAX_S = 120
 
 CheckEndReason = Literal["ended_by_client", "disconnected", "time_limit", "error"]
+
+
+def check_speech_settings(s: Settings) -> Settings:
+    """The settings a check builds its speech with: always local, so a check is $0 whatever the interview uses
+    (owner ruling, final review). A paid provider is swapped for the local default (whisper / piper)."""
+    upd: dict = {}
+    if spec("stt", s.stt_provider).remote:
+        upd.update(stt_provider="whisper", stt_model=Settings.model_fields["stt_model"].default)
+    if spec("tts", s.tts_provider).remote:
+        upd.update(tts_provider="piper", tts_voice="")
+    return s.model_copy(update=upd) if upd else s
 
 
 class CheckHooks(Protocol):
@@ -75,8 +87,9 @@ class CheckController(FrameProcessor):
 async def run_check(hooks: CheckHooks, transport, s: Settings, *, stt=None, tts=None, turn_strategies=None, vad=None,
                     level_monitor: InputLevelMonitor | None = None, max_s: float = CHECK_MAX_S) -> None:
     t0 = time.monotonic()
-    stt = stt if stt is not None else make_stt(s)
-    tts = tts if tts is not None else make_tts(s)
+    local = check_speech_settings(s)
+    stt = stt if stt is not None else make_stt(local)
+    tts = tts if tts is not None else make_tts(local)
     if turn_strategies is None:
         turn_strategies, vad = make_turn_strategies(s)
     monitor = level_monitor if level_monitor is not None else InputLevelMonitor()

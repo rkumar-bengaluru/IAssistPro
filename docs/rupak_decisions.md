@@ -310,3 +310,16 @@ Plans: IAssistPro `docs/superpowers/plans/2026-11-04-audio-check.md`, JobLens `d
 | UXP3 | **`BARGE_IN_MIN_S` is built now and stays default 0**; JobLens's compose doesn't set it. Your no-headset session (13 turns, follow-ups fine, median 2.7 s, no self-interruption) passes on that front. The one 0.9 s turn after a question is ambiguous: the floor wouldn't catch it anyway, since it applies only while the interviewer speaks. If you confirm it was echo, the next step is a narrow "echo tail" guard (drop a < 1 s candidate segment starting within 300 ms of the interviewer stopping), as its own small change with a test. Nothing changes on one unconfirmed event. | Evidence first. A floor > 0 would make real interruptions sluggish to fix a problem not yet seen, and it wouldn't touch this case. |
 | UXP4 | JobLens guesses confirmed. G1: status stored per question, `ticked` derived, no migration. G2: the chosen questions are asked in table order, so "Tell me about yourself" stays first. G3/G4: checks are global and held in memory, and starting a session ends open checks. G5: no "Default" mic entry. G7: a separate prep runner. G9: jobs open on Application. G10: meters show what the interviewer receives. G12: pass needs both steps. G16: `keepalive` end. The Task 6 fix (open the chosen mic before connecting, so it can't race Daily's device pick) is approved, with the decided fallback. | They match R11–R14 and UX1–UX7. The mic race is the most likely cause of your silent Chrome besides the setting you fixed, so it gets a test. |
 | UXP5 | Other guesses (G6, G8, G11, G13–G15) accepted as written. | Small, reversible, consistent with the design. |
+
+## Audio check final review (2026-11-04)
+
+Branch `feat/audio-check` (IAssistPro). Final review: no Critical; two Important findings fixed, four minors deferred.
+
+| # | Change or ruling | Why |
+|---|---|---|
+| AC1 | **Fixed:** `POST /checks/{id}/end` on a stuck check now cancels it and waits (up to 1 s) for it to stop before freeing the lock; a cancel that follows an End request is recorded as `ended_by_client`. | A hung check's pipeline must not overlap the next interview's. |
+| AC2 | **Fixed, ruling by the architect for you (C3):** checks must stay $0 whatever providers are configured, so a check always builds local speech (whisper; piper or kokoro). A paid TTS such as cartesia is swapped for piper's default voice. Noted in the README and the plan's contract section. | "An audio check that spends money" is an anti-goal; a paid TTS configured for interviews would otherwise be billed for every check. |
+| AC3 | Deferred minor: a peer connection can linger when End arrives while an offer is being answered. | Rare; the lock is still freed. |
+| AC4 | Deferred minor: the `silent_input` log line carries no session/check id. | Log-only; the surrounding lines identify the call. |
+| AC5 | Deferred minor (**JobLens note**): with weak echo cancellation a check may "hear" its own prompt. JobLens can ignore `heard` until the prompt has finished playing (`onBotStoppedSpeaking`). | Cheap client-side guard; the service can't tell echo from speech. |
+| AC6 | Deferred minor: the C2 silence threshold (no sample beyond ±1, at most 5 % non-zero) is proven on Chromium's silent fake mic but not yet on a real quiet room. To be measured in the JobLens live run. | Real-room evidence before tuning. |

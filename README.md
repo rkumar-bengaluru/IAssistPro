@@ -111,7 +111,9 @@ refused with 422; year ranges such as 2019-2023 are fine.
 ### Audio check
 
 A free, LLM-less call that tests audio both ways before an interview (UX7). It shares the one-session lock, the
-one-time token and the SmallWebRTC offer flow with sessions, stores nothing and costs $0. On connect the service says
+one-time token and the SmallWebRTC offer flow with sessions, stores nothing and costs $0. Checks always use local speech
+(whisper, and piper or kokoro), even when interviews use a paid TTS such as cartesia (then the check speaks with piper's
+default voice). On connect the service says
 "This is your interviewer. If you can hear me, press 'I heard it'."
 
 | Method, path | Success | Errors |

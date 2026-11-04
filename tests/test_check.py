@@ -211,3 +211,39 @@ async def test_check_writes_nothing(tmp_path, monkeypatch):
 
     await run_fake_check(script, s=Settings(llm_provider="fake"))
     assert list(tmp_path.iterdir()) == []
+
+
+async def test_check_uses_local_speech_even_when_paid_tts_is_configured(monkeypatch):
+    """Owner ruling (final review): a check is always $0, so it never builds a paid speech provider."""
+    import iassistpro.check
+
+    monkeypatch.setenv("TTS_PROVIDER", "cartesia")
+    monkeypatch.setenv("TTS_VOICE", "some-voice-id")
+    built = []
+
+    def fake_make_tts(s):
+        built.append((s.tts_provider, s.tts_voice_resolved))
+        return RecordingTTS()
+
+    monkeypatch.setattr(iassistpro.check, "make_tts", fake_make_tts)
+    from iassistpro.check import run_check
+
+    hooks, transport = FakeCheckHooks(), FakeTransport()
+    task = asyncio.create_task(run_check(hooks, transport, Settings(llm_provider="fake"), stt=Passthrough(),
+                                         turn_strategies=external_strategies(), vad=None, max_s=0.3))
+    await transport.input().start_event.wait()
+    await transport.fire("on_client_connected")
+    await asyncio.wait_for(task, 5)
+    assert built == [("piper", "en_US-lessac-medium")]
+
+
+def test_check_speech_settings_keep_local_providers(monkeypatch):
+    from iassistpro.check import check_speech_settings
+
+    monkeypatch.setenv("TTS_PROVIDER", "kokoro")
+    s = check_speech_settings(Settings())
+    assert (s.stt_provider, s.tts_provider, s.tts_voice_resolved) == ("whisper", "kokoro", "af_heart")
+    monkeypatch.setenv("TTS_PROVIDER", "cartesia")
+    monkeypatch.setenv("TTS_VOICE", "v")
+    s = check_speech_settings(Settings())
+    assert (s.tts_provider, s.tts_voice) == ("piper", "")
