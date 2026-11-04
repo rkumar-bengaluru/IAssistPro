@@ -132,8 +132,8 @@ RTVI messages on the WebRTC data channel (server → browser as `{"label": "rtvi
 
 | `data` | When | Sessions | Checks |
 |---|---|---|---|
-| `{"type": "mic_level", "rms": float}` | every 200 ms of **received** audio (~5/s). RMS of the 16 kHz int16 samples / 32768, 4 decimals, floored at `0.0001` when any sample in the window is non-zero; exactly `0.0` only for digital silence. No frames → no messages. | yes | yes |
-| `{"type": "silent_input", "reason": "zeros" \| "no_audio"}` | `zeros`: 3.0 s of frames whose samples are all exactly 0. `no_audio`: no inbound frame for 3.0 s since connect or the last frame. Once per silent episode; re-armed by any non-zero sample. The browser clears its warning on a `mic_level` with `rms > 0`. | yes | yes |
+| `{"type": "mic_level", "rms": float}` | every 200 ms of **received** audio (~5/s). RMS of the 16 kHz int16 samples / 32768, 4 decimals, floored at `0.0001` unless the window is digital silence; exactly `0.0` only for digital silence. No frames → no messages. | yes | yes |
+| `{"type": "silent_input", "reason": "zeros" \| "no_audio"}` | `zeros`: 3.0 s of digital silence (all samples 0, or no sample beyond ±1 with at most 5 % non-zero: the residue WebRTC leaves on an all-zero mic). `no_audio`: no inbound frame for 3.0 s since connect or the last frame. Once per silent episode; re-armed by any non-zero sample. The browser clears its warning on a `mic_level` with `rms > 0`. | yes | yes |
 | `{"type": "heard", "text": str}` | after a `listen` request, when the candidate's next turn ends (the interview's turn rules); trimmed, may be `""`. One per `listen`. | – | yes |
 | `{"type": "check_ended", "reason": "time_limit" \| "ended_by_client"}` | just before the service closes a check itself. | – | yes |
 

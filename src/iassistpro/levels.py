@@ -1,7 +1,8 @@
 """Inbound mic level and silent-input detection (spec §3.1 step 2, §3.3; UX3, UXP2).
 
 `LevelMeter` is pure: int16 PCM in, `mic_level` / `silent_input` messages out. Silence means *digital* silence
-(every sample exactly 0) or no frames at all; a quiet room (±1–2 LSB) is never silent, so a candidate thinking quietly
+(all-zero samples, allowing the sparse ±1 residue WebRTC leaves on them) or no frames at all; a quiet room (±1–2 LSB)
+is never silent, so a candidate thinking quietly
 is never nagged. `InputLevelMonitor` puts the meter in a pipeline right after `transport.input()` and pushes its
 messages as RTVI server messages (Pipecat's RTVI observer forwards them on the data channel).
 """
@@ -19,6 +20,15 @@ from .logs import log_event
 
 LEVEL_WINDOW_S = 0.2
 SILENT_AFTER_S = 3.0
+# A dead mic does not arrive as exact zeros: after Opus and resampling, Chrome's all-zero input reaches the pipeline
+# with a residue of ±1 at ~2 of 320 samples per frame (seen in the check e2e). A frame is digital silence when no
+# sample exceeds 1 LSB and at most this share of samples is non-zero; room noise, even ±1 LSB, is far denser (ruling C2).
+SILENCE_MAX_NONZERO = 0.05
+
+
+def is_digital_silence(samples: np.ndarray) -> bool:
+    nz = int(np.count_nonzero(samples))
+    return nz == 0 or (nz <= SILENCE_MAX_NONZERO * samples.size and int(np.abs(samples).max()) <= 1)
 
 
 class LevelMeter:
@@ -27,6 +37,7 @@ class LevelMeter:
         self.silent_after_s = silent_after_s
         self._sumsq = 0.0
         self._n = 0
+        self._window_silent = True
         self._zero_run_s = 0.0
         self._armed = True
         self._started = False
@@ -43,15 +54,17 @@ class LevelMeter:
         self._last = now
         out: list[dict] = []
         x = samples.astype(np.float64)
+        silent = is_digital_silence(samples)
         self._sumsq += float(np.dot(x, x))
         self._n += samples.size
+        self._window_silent = self._window_silent and silent
         if self._n >= self.window_s * sample_rate * channels:
             rms = float(np.sqrt(self._sumsq / self._n)) / 32768
-            # 4 decimals, but a window with any non-zero sample never rounds down to 0.0: exactly 0.0 means
-            # digital silence, and the browser clears its warning on rms > 0 (a quiet room is ~0.00004).
-            out.append({"type": "mic_level", "rms": max(round(rms, 4), 0.0001) if self._sumsq > 0 else 0.0})
-            self._sumsq, self._n = 0.0, 0
-        if np.any(samples):
+            # 4 decimals; exactly 0.0 means digital silence, and any other window is floored at 0.0001 so the browser,
+            # which clears its warning on rms > 0, never mistakes a quiet room (~0.00004) for a dead mic (C1, C2).
+            out.append({"type": "mic_level", "rms": 0.0 if self._window_silent else max(round(rms, 4), 0.0001)})
+            self._sumsq, self._n, self._window_silent = 0.0, 0, True
+        if not silent:
             self._zero_run_s = 0.0
             self._armed = True
         else:

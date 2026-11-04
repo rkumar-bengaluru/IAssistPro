@@ -175,3 +175,32 @@ async def _run(worker):
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
     await runner.run()
+
+
+def residue_frames(seconds: float) -> list[bytes]:
+    """What a dead mic looks like after WebRTC (seen in the e2e): 20 ms frames, all zero but two samples of ±1."""
+    out = []
+    for f in range(round(seconds * 50)):
+        s = [0] * 320
+        s[37], s[211] = 1, -1
+        out.append(_pack(s))
+    return out
+
+
+def test_decoder_residue_counts_as_digital_silence():
+    m = LevelMeter(); m.start(0)
+    msgs = []
+    for i, f in enumerate(residue_frames(3.0)):
+        msgs.extend(m.feed(f, SR, 1, i * 0.02))
+    levels = [x for x in msgs if x["type"] == "mic_level"]
+    assert len(levels) == 15 and all(x["rms"] == 0.0 for x in levels)
+    assert silent(msgs) == [{"type": "silent_input", "reason": "zeros"}]
+
+
+def test_one_lsb_room_noise_is_not_silence():
+    rng = random.Random(3)
+    m = LevelMeter(); m.start(0)
+    msgs = []
+    for i in range(1000):  # 10 s of ±1 LSB noise, about half the samples non-zero
+        msgs.extend(m.feed(_pack([rng.choice((-1, 0, 1)) for _ in range(N)]), SR, 1, i * 0.01))
+    assert silent(msgs) == [] and all(x["rms"] > 0 for x in msgs if x["type"] == "mic_level")
