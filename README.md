@@ -106,6 +106,43 @@ refused with 422; year ranges such as 2019-2023 are fine.
 | `DEV_CLIENT` | `0` (`1` in this repo's compose) | serves `/dev/client` |
 | `DEBUG_STEREO_WAV` | `0` | `1` keeps a stereo WAV next to the Ogg |
 | `LOG_LEVEL` | `INFO` | |
+| `BARGE_IN_MIN_S` | `0` | 0–3. `0` = today. When > 0, while the interviewer speaks the candidate interrupts only after that many seconds of continuous speech; shorter speech is dropped with its transcript. `0.8` is the no-headset fallback (UX5). |
+
+### Audio check
+
+A free, LLM-less call that tests audio both ways before an interview (UX7). It shares the one-session lock, the
+one-time token and the SmallWebRTC offer flow with sessions, stores nothing and costs $0. Checks always use local speech
+(whisper, and piper or kokoro), even when interviews use a paid TTS such as cartesia (then the check speaks with piper's
+default voice). On connect the service says
+"This is your interviewer. If you can hear me, press 'I heard it'."
+
+| Method, path | Success | Errors |
+|---|---|---|
+| `POST /checks` (no body; an empty body or `{}` is accepted) | 201 `{"check_id": "<32 hex>", "connect": {"transport": "smallwebrtc", "offer_path": "/checks/{id}/offer", "token": "<one-time>", "expires_at": "<ISO 8601 UTC>"}}` | 409 `busy` (a session **or** check is waiting/live; no id); 503 `not_ready` (+`status`); 409 `wrong_state` when the service runs `TRANSPORT=websocket` (checks are SmallWebRTC only) |
+| `POST /checks/{id}/offer` (SmallWebRTC SDP offer JSON; token in `X-Session-Token` or `?token=`) | 200 Pipecat answer `{sdp, type, pc_id}` | 401 `token_invalid`; 410 `token_expired`; 409 `wrong_state` (second offer, or check finished); 404 `unknown_check` |
+| `PATCH /checks/{id}/offer` (`{pc_id, candidates}`, same token) | 200 `{"status": "success"}` | as above |
+| `GET /checks/{id}` | 200 `CheckStatus` | 404 `unknown_check` |
+| `POST /checks/{id}/end` | 202 `CheckStatus`, sent **only after the check has stopped and the lock is free** (waits up to 5 s, then cancels the check). Idempotent. | 404 `unknown_check` |
+
+`CheckStatus`: `{"check_id", "state": "waiting" | "live" | "ended" | "failed", "elapsed_s", "end_reason":
+"ended_by_client" | "disconnected" | "time_limit" | "error" | null, "error": null | "not_connected" | "offer_failed" |
+"runner_error:<Type>" | "pipeline_error:<Type>"}`. A check ends on `POST /checks/{id}/end`, on disconnect, or 120 s
+after the offer. Finished checks are forgotten 10 minutes after they end; a restart forgets all checks.
+
+RTVI messages on the WebRTC data channel (server → browser as `{"label": "rtvi-ai", "type": "server-message",
+"data": …}`, delivered by `@pipecat-ai/client-js` to `onServerMessage(data)`):
+
+| `data` | When | Sessions | Checks |
+|---|---|---|---|
+| `{"type": "mic_level", "rms": float}` | every 200 ms of **received** audio (~5/s). RMS of the 16 kHz int16 samples / 32768, 4 decimals, floored at `0.0001` unless the window is digital silence; exactly `0.0` only for digital silence. No frames → no messages. | yes | yes |
+| `{"type": "silent_input", "reason": "zeros" \| "no_audio"}` | `zeros`: 3.0 s of digital silence (all samples 0, or no sample beyond ±1 with at most 5 % non-zero: the residue WebRTC leaves on an all-zero mic). `no_audio`: no inbound frame for 3.0 s since connect or the last frame. Once per silent episode; re-armed by any non-zero sample. The browser clears its warning on a `mic_level` with `rms > 0`. | yes | yes |
+| `{"type": "heard", "text": str}` | after a `listen` request, when the candidate's next turn ends (the interview's turn rules); trimmed, may be `""`. One per `listen`. | – | yes |
+| `{"type": "check_ended", "reason": "time_limit" \| "ended_by_client"}` | just before the service closes a check itself. | – | yes |
+
+Browser → service (`client.sendClientMessage(type)`): `listen` (transcribe the next turn; send again to repeat) and
+`play_prompt` (speak the sentence again). Unknown types, and these during interviews, are ignored; nothing is sent
+back. One offer per session or check: switch the mic with `RTCRtpSender.replaceTrack`, or end the check and create a
+new one (end waits for the lock, so the new create is never `busy`).
 
 ## Providers
 

@@ -264,4 +264,9 @@ def make_turn_strategies(s: Settings):
         stop = [GraceUserTurnStopStrategy(smart, grace_s=s.turn_grace_s)]
     else:
         stop = [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=max(0.0, s.silence_s - s.vad_stop_s))]
-    return UserTurnStrategies(stop=stop), make_vad(s)
+    start = None  # Pipecat's defaults: VAD, then transcription
+    if s.barge_in_min_s > 0:
+        from .turns import BargeInFloorStartStrategy
+
+        start = [BargeInFloorStartStrategy(min_s=s.barge_in_min_s)]
+    return UserTurnStrategies(start=start, stop=stop), make_vad(s)

@@ -17,6 +17,9 @@ from .store import SessionMeta, SessionStore, StateRecord
 
 SWEEP_EVERY_S = 600
 HOUSEKEEPING_EVERY_S = 10
+CHECK_END_WAIT_S = 5.0  # POST /checks/{id}/end replies only once the lock is free (or after this, cancelling the check)
+CHECK_KEEP_S = 600  # a finished check's status is kept this long, then 404
+CHECK_CANCEL_WAIT_S = 1.0  # after cancelling a stuck check, how long to wait for it to stop before freeing the lock
 
 
 class ServiceError(Exception):
@@ -63,6 +66,10 @@ class AudioPending(ServiceError):
 
 class NoAudio(ServiceError):
     http_status, code = 404, "no_audio"
+
+
+class UnknownCheck(ServiceError):
+    http_status, code = 404, "unknown_check"
 
 
 def _now() -> datetime:
@@ -153,6 +160,15 @@ class LiveSession:
         self.audio_state = info.state
         self._write(audio=info)
 
+    def expire(self) -> None:
+        self.state = "failed"
+        self.end_reason, self.error = "error", "not_connected"
+        self.ended_mono = self.manager.clock()
+        self._write(state="failed", end_reason="error", error="not_connected", ended_at=_now(),
+                    audio=AudioInfo(state="none"))
+        log_event("session_expired", session=self.session_id)
+        self.manager._release(self)
+
     def status(self) -> dict:
         if self.connected_mono is None:
             elapsed = 0.0
@@ -167,13 +183,83 @@ class LiveSession:
         }
 
 
+class CheckSession:
+    """A waiting, live or recently finished audio check, in memory only; implements check.CheckHooks (UX7).
+
+    It shares the one-session lock, the one-time token and the offer path with interviews, and stores nothing.
+    """
+
+    def __init__(self, manager: "SessionManager", check_id: str, token: str, ttl_s: int):
+        self.manager = manager
+        self.check_id = check_id
+        self.token_hash = _hash(token)
+        self.created_mono = manager.clock()
+        self.ttl_s = ttl_s
+        self.expires_at = _now() + timedelta(seconds=ttl_s)
+        self.state = "waiting"
+        self.offered = False
+        self.pc_id: str | None = None
+        self.end_requested = asyncio.Event()
+        self.task: asyncio.Task | None = None
+        self.end_reason: str | None = None
+        self.error: str | None = None
+        self.connected_mono: float | None = None
+        self.ended_mono: float | None = None
+
+    def token_ok(self, token: str | None) -> bool:
+        return bool(token) and hmac.compare_digest(_hash(token), self.token_hash)
+
+    def expired(self) -> bool:
+        return self.manager.clock() - self.created_mono > self.ttl_s
+
+    def on_live(self) -> None:
+        if self.state != "waiting":
+            return
+        self.state = "live"
+        self.connected_mono = self.manager.clock()
+        log_event("check_live", check=self.check_id)
+
+    def on_end(self, reason: str, error: str | None) -> None:
+        if self.state in ("ended", "failed"):
+            return
+        self.state = "failed" if reason == "error" else "ended"
+        self.end_reason, self.error = reason, error
+        self.ended_mono = self.manager.clock()
+        log_event("check_ended", check=self.check_id, reason=reason, error=error)
+        self.manager._release(self)
+
+    def expire(self) -> None:
+        if self.state in ("ended", "failed"):
+            return
+        self.state = "failed"
+        self.end_reason, self.error = "error", "not_connected"
+        self.ended_mono = self.manager.clock()
+        log_event("check_expired", check=self.check_id)
+        self.manager._release(self)
+
+    def status(self) -> dict:
+        if self.connected_mono is None:
+            elapsed = 0.0
+        else:
+            elapsed = (self.ended_mono or self.manager.clock()) - self.connected_mono
+        return {"check_id": self.check_id, "state": self.state, "elapsed_s": round(elapsed, 1),
+                "end_reason": self.end_reason, "error": self.error}
+
+
 Runner = Callable[[LiveSession, object, Settings], Awaitable[None]]
+CheckRunner = Callable[[CheckSession, object, Settings], Awaitable[None]]
 
 
 def _default_runner() -> Runner:
     from .pipeline import run_interview
 
     return run_interview
+
+
+def _default_check_runner() -> CheckRunner:
+    from .check import run_check
+
+    return run_check
 
 
 def _default_transport_factory(connection, s: Settings):
@@ -186,17 +272,20 @@ def _default_transport_factory(connection, s: Settings):
 
 class SessionManager:
     def __init__(self, s: Settings, store: SessionStore, status: ModelStatus, runner: Runner | None = None,
-                 clock: Callable[[], float] = time.monotonic, webrtc_handler=None, transport_factory=None):
+                 clock: Callable[[], float] = time.monotonic, webrtc_handler=None, transport_factory=None,
+                 check_runner: CheckRunner | None = None):
         self.s = s
         self.store = store
         self.model_status = status
         self.runner = runner or _default_runner()
+        self.check_runner = check_runner or _default_check_runner()
         self.clock = clock
         self._webrtc = webrtc_handler
         self._transport_factory = transport_factory or _default_transport_factory
         self._lock = asyncio.Lock()
-        self._active: LiveSession | None = None
+        self._active: LiveSession | CheckSession | None = None
         self._sessions: dict[str, LiveSession] = {}
+        self._checks: dict[str, CheckSession] = {}
         self._last_sweep = clock()
         self.audio_recovery: asyncio.Task | None = None
 
@@ -217,7 +306,7 @@ class SessionManager:
         # A restart during encoding left a finished session's audio pending: settle it in the background (AF4).
         self.audio_recovery = asyncio.create_task(asyncio.to_thread(self.store.recover_pending_audio))
 
-    def _release(self, live: LiveSession) -> None:
+    def _release(self, live: "LiveSession | CheckSession") -> None:
         if self._active is live:
             self._active = None
 
@@ -253,41 +342,42 @@ class SessionManager:
             connect["offer_path"] = f"/sessions/{sid}/offer"
         return {"session_id": sid, "connect": connect}
 
-    # ---- connect
-    def _expire(self, live: LiveSession) -> None:
-        live.state = "failed"
-        live.end_reason, live.error = "error", "not_connected"
-        live.ended_mono = self.clock()
-        live._write(state="failed", end_reason="error", error="not_connected", ended_at=_now(),
-                    audio=AudioInfo(state="none"))
-        log_event("session_expired", session=live.session_id)
-        self._release(live)
-
+    # ---- connect (shared by sessions and checks)
     async def _expire_waiting(self) -> None:
         live = self._active
         if live is not None and live.state == "waiting" and not live.offered and live.expired():
-            self._expire(live)
+            live.expire()
 
-    def _check_connect(self, session_id: str, token: str | None) -> LiveSession:
-        live = self._require(session_id)
+    def _check_connect(self, live: "LiveSession | CheckSession | None", token: str | None):
         if live is None:
             raise WrongState("session is not waiting")
         if not live.token_ok(token):
             raise TokenInvalid("invalid session token")
         if live.state == "waiting" and not live.offered and live.expired():
-            self._expire(live)
+            live.expire()
         if live.error == "not_connected":
             raise TokenExpired("the connect token has expired")
         if live.state != "waiting" or live.offered:
             raise WrongState("session already connected or finished")
         return live
 
-    def _start_runner(self, live: LiveSession, transport) -> None:
+    @staticmethod
+    def _log_id(live) -> dict:
+        return {"check": live.check_id} if isinstance(live, CheckSession) else {"session": live.session_id}
+
+    def _start_runner(self, live, transport, runner) -> None:
+        if live.state not in ("waiting", "live"):  # ended before the connection arrived (an early end)
+            return
+
         async def run():
             try:
-                await self.runner(live, transport, self.s)
+                await runner(live, transport, self.s)
+            except asyncio.CancelledError:
+                if isinstance(live, CheckSession) and live.end_requested.is_set():
+                    live.on_end("ended_by_client", None)  # cancelled by end_check after End was asked for
+                raise
             except Exception as e:
-                log_event("runner_failed", session=live.session_id, error=type(e).__name__)
+                log_event("runner_failed", error=type(e).__name__, **self._log_id(live))
                 live.on_end("error", f"runner_error:{type(e).__name__}")
             finally:
                 if live.state in ("waiting", "live"):
@@ -295,33 +385,34 @@ class SessionManager:
 
         live.task = asyncio.create_task(run())
 
-    async def offer(self, session_id: str, token: str | None, body: dict) -> dict:
+    async def _answer_offer(self, live, body: dict, runner) -> dict:
         from pipecat.transports.smallwebrtc.request_handler import SmallWebRTCRequest
 
-        if self.s.transport != "smallwebrtc":
-            raise WrongState("this service uses the websocket transport")
-        async with self._lock:
-            live = self._check_connect(session_id, token)
-            live.offered = True
-
         async def on_connection(connection):
-            self._start_runner(live, self._transport_factory(connection, self.s))
+            self._start_runner(live, self._transport_factory(connection, self.s), runner)
 
         try:
             answer = await self._webrtc_handler().handle_web_request(
                 request=SmallWebRTCRequest.from_dict(dict(body)), webrtc_connection_callback=on_connection)
         except Exception as e:
-            log_event("offer_failed", session=session_id, error=type(e).__name__)
+            log_event("offer_failed", error=type(e).__name__, **self._log_id(live))
             live.on_end("error", "offer_failed")
             raise WrongState("the offer could not be answered") from e
         live.pc_id = (answer or {}).get("pc_id")
-        log_event("offer_answered", session=session_id)
+        log_event("offer_answered", **self._log_id(live))
         return answer
 
-    async def patch(self, session_id: str, token: str | None, body: dict) -> dict:
+    async def offer(self, session_id: str, token: str | None, body: dict) -> dict:
+        if self.s.transport != "smallwebrtc":
+            raise WrongState("this service uses the websocket transport")
+        async with self._lock:
+            live = self._check_connect(self._require(session_id), token)
+            live.offered = True
+        return await self._answer_offer(live, body, self.runner)
+
+    async def _patch(self, live, token: str | None, body: dict) -> dict:
         from pipecat.transports.smallwebrtc.request_handler import IceCandidate, SmallWebRTCPatchRequest
 
-        live = self._require(session_id)
         if live is None:
             raise WrongState("session is not connecting")
         if not live.token_ok(token):
@@ -333,13 +424,16 @@ class SessionManager:
         await self._webrtc_handler().handle_patch_request(req)
         return {"status": "success"}
 
+    async def patch(self, session_id: str, token: str | None, body: dict) -> dict:
+        return await self._patch(self._require(session_id), token, body)
+
     async def websocket(self, session_id: str, token: str | None, ws) -> None:
         if self.s.transport != "websocket":
             await ws.close(code=4409)
             return
         try:
             async with self._lock:
-                live = self._check_connect(session_id, token)
+                live = self._check_connect(self._require(session_id), token)
                 live.offered = True
         except TokenInvalid:
             await ws.close(code=4401)
@@ -356,8 +450,76 @@ class SessionManager:
         await ws.accept()
         transport = FastAPIWebsocketTransport(websocket=ws, params=FastAPIWebsocketParams(
             audio_in_enabled=True, audio_out_enabled=True, serializer=ProtobufFrameSerializer()))
-        self._start_runner(live, transport)
+        self._start_runner(live, transport, self.runner)
         await live.task
+
+    # ---- audio checks (UX7): same lock, token and offer flow; nothing stored
+    def _require_check(self, check_id: str) -> CheckSession:
+        check = self._checks.get(check_id)
+        if check is None:
+            raise UnknownCheck("unknown check")
+        return check
+
+    async def create_check(self) -> dict:
+        if self.s.transport != "smallwebrtc":
+            raise WrongState("audio checks need the smallwebrtc transport")
+        async with self._lock:
+            await self._expire_waiting()
+            h = health(self.s, self.model_status, busy=self.busy)
+            if h["status"] != "ready":
+                raise NotReady("the interviewer is not ready", status=h["status"])
+            if self._active is not None:
+                raise Busy("a session or check is already waiting or live")
+            cid = new_session_id()
+            token = secrets.token_urlsafe(32)
+            check = CheckSession(self, cid, token, self.s.connect_token_ttl_s)
+            self._checks[cid] = check
+            self._active = check
+        log_event("check_created", check=cid)
+        return {"check_id": cid, "connect": {"transport": "smallwebrtc", "offer_path": f"/checks/{cid}/offer",
+                                             "token": token, "expires_at": _iso(check.expires_at)}}
+
+    async def check_offer(self, check_id: str, token: str | None, body: dict) -> dict:
+        async with self._lock:
+            check = self._check_connect(self._require_check(check_id), token)
+            check.offered = True
+        return await self._answer_offer(check, body, self.check_runner)
+
+    async def check_patch(self, check_id: str, token: str | None, body: dict) -> dict:
+        return await self._patch(self._require_check(check_id), token, body)
+
+    def check_status(self, check_id: str) -> dict:
+        return self._require_check(check_id).status()
+
+    async def end_check(self, check_id: str) -> dict:
+        """Ends the check and replies only once the lock is free, so "Begin interview" right after is never busy."""
+        check = self._require_check(check_id)
+        if check.state in ("waiting", "live"):
+            task = check.task
+            if task is None:  # never offered, or offered but not connected yet: nothing runs, end it here
+                check.on_end("ended_by_client", None)
+            else:
+                check.end_requested.set()
+                log_event("check_end_requested", check=check_id)
+                try:
+                    await asyncio.wait_for(asyncio.shield(task), CHECK_END_WAIT_S)
+                except asyncio.TimeoutError:
+                    log_event("check_end_timeout", check=check_id)
+                    task.cancel()
+                    # Free the lock only once the check has stopped (its pipeline must not overlap the next
+                    # interview's), waiting a bounded time for a check that is slow to wind down.
+                    _done, pending = await asyncio.wait({task}, timeout=CHECK_CANCEL_WAIT_S)
+                    if pending:
+                        log_event("check_cancel_timeout", check=check_id)
+                    check.on_end("ended_by_client", None)
+                except Exception:
+                    pass  # the runner wrapper already recorded the failure
+        return check.status()
+
+    def _forget_old_checks(self) -> None:
+        for cid, check in list(self._checks.items()):
+            if check.ended_mono is not None and self.clock() - check.ended_mono > CHECK_KEEP_S:
+                del self._checks[cid]
 
     # ---- status, end, results
     def status(self, session_id: str) -> dict:
@@ -414,6 +576,7 @@ class SessionManager:
             try:
                 async with self._lock:
                     await self._expire_waiting()
+                self._forget_old_checks()
                 if self.clock() - self._last_sweep >= SWEEP_EVERY_S:
                     self._last_sweep = self.clock()
                     for sid in self.store.sweep(_now()):

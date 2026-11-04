@@ -273,3 +273,69 @@ Deferred minors (not fixed; for you to decide):
 | DM9 | `prod.ps1 up` appends the missing `.env.prod` keys before the idle check (harmless). |
 | DM10 | A session that failed without ever connecting doesn't delete the service's copy; the service's TTL cleans it up. |
 | DM11 | **Retry rating** checks the daily budget, not the room left under the hard cap. It is one call at most. |
+
+## Interview UX + audio check: design approval by the architect (2026-11-04)
+
+Design: `docs/superpowers/specs/2026-11-04-interview-ux-and-audio-check-design.md`. Approved with changes.
+
+### Rupak (2026-11-04, after the first dev sessions)
+
+| # | Decision |
+|---|---|
+| R11 | A table of questions with buttons such as Review, Accept and Reject, so browsing is easy. |
+| R12 | After Start mock interview and the mic permission, a page that tests audio both ways (you hear the interviewer, the interviewer hears you); only once it passes does the real interview start. |
+| R13 | Make the UI more user friendly: the job page is getting crowded. |
+| R14 | You'd rather not wear a headset. |
+
+### Rulings and changes
+
+| # | Change or ruling | Why |
+|---|---|---|
+| UX1 | **Status model approved** (`to_review`/`accepted`/`rejected`, accepted first, then to_review in order as the fallback), with two changes. (a) Old sets map at read time with no data rewrite: unticked → rejected, own → accepted, and other ticked → **to_review**, not accepted. (b) The Start panel states the mix: "Uses 5 accepted + 3 not yet reviewed questions". | Release 1 ticked everything by default, so calling those "accepted" would claim a review you never did. The fallback keeps the start one click; the line keeps it honest. |
+| UX2 | **Skip check** only for an **explicitly chosen** mic (a real device id, never "Default") that passed in this browser within 24 h. The chosen mic is remembered in the browser and preselected. | "Default" is exactly what silently moved to a virtual device on 4 Nov. A remembered real device makes the second interview a one-click start. |
+| UX3 | The "can't hear you" banner fires on `silent_input` only; the 12 s no-speech trigger is dropped. | Thinking quietly in a real room still sends noise. A banner after 12 s of thinking would nag you mid-interview, while digital silence is the actual fault. |
+| UX4 | Prepare runs in the background (202, then polling); the in-flight state stays in the app process and clears on restart; a second click gets 409. | 3.5 minutes is too long to hold a request open; nothing needs a table for a state that dies with the process (YAGNI). |
+| UX5 | No headset approved (echo cancellation, noise suppression, auto gain). If the live test shows self-interruption, the one pre-approved fallback is `BARGE_IN_MIN_S=0.8` for no-headset use, then a re-test. This narrows AT5's "no minimum barge-in" to the headset case. | R14. The interviewer hearing itself through the speakers is the main risk, and a short barge-in floor is the least visible fix. |
+| UX6 | Three tabs approved (Application / Interview prep / Mock interviews), plus a **Start mock interview** button in the Interview prep tab's header. | Less crowding (R13) without adding a click between reviewing and rehearsing. |
+| UX7 | The **service check mode is approved over a client-only check**: no LLM, $0, same lock and token flow. | You asked that the *interviewer* hears you and you hear it (R12). Only an end-to-end check covers the WebRTC path, UDP ports, STT and TTS; a local meter would pass while the call fails. |
+
+## Interview UX + audio check: plan approval by the architect (2026-11-04)
+
+Plans: IAssistPro `docs/superpowers/plans/2026-11-04-audio-check.md`, JobLens `docs/superpowers/plans/2026-11-04-interview-ux.md`. Both approved; JobLens with contract edits.
+
+| # | Change or ruling | Why |
+|---|---|---|
+| UXP1 | **Contract reconciled; the service plan is the source of truth.** JobLens's K1–K9 were edited to match it. The Play again client message is **`play_prompt`** (not `play_again`). `POST /checks/{id}/end` returns 202 only after the lock is free (waits up to 5 s; JobLens's client allows 10 s). `silent_input` carries `reason` (`zeros`/`no_audio`), with one copy for both. JobLens handles `check_ended` with "The check timed out. Start it again." and a **Start again** button. Also: 404 `unknown_check` → `CHECK_GONE`; 409 `wrong_state` under `TRANSPORT=websocket`; one offer per check, so a mic change on the check page means end + new check (the live screen switches by `replaceTrack`). | The two plans must meet on the same wire names before either is built. |
+| UXP2 | The service plan's additions to §3.1 are accepted: `play_prompt`, `GET /checks/{id}`, PATCH offer, `check_ended`, `silent_input` on no frames with `reason`, end waiting for the lock, SmallWebRTC-only checks, and mic switching by `replaceTrack`. Silence means exact-zero samples (or no frames). | Each closes a hole the design left (Play again, a muted track sending nothing, Begin hitting `busy`). Exact zero keeps a quiet room from ever triggering it (UX3). |
+| UXP3 | **`BARGE_IN_MIN_S` is built now and stays default 0**; JobLens's compose doesn't set it. Your no-headset session (13 turns, follow-ups fine, median 2.7 s, no self-interruption) passes on that front. The one 0.9 s turn after a question is ambiguous: the floor wouldn't catch it anyway, since it applies only while the interviewer speaks. If you confirm it was echo, the next step is a narrow "echo tail" guard (drop a < 1 s candidate segment starting within 300 ms of the interviewer stopping), as its own small change with a test. Nothing changes on one unconfirmed event. | Evidence first. A floor > 0 would make real interruptions sluggish to fix a problem not yet seen, and it wouldn't touch this case. |
+| UXP4 | JobLens guesses confirmed. G1: status stored per question, `ticked` derived, no migration. G2: the chosen questions are asked in table order, so "Tell me about yourself" stays first. G3/G4: checks are global and held in memory, and starting a session ends open checks. G5: no "Default" mic entry. G7: a separate prep runner. G9: jobs open on Application. G10: meters show what the interviewer receives. G12: pass needs both steps. G16: `keepalive` end. The Task 6 fix (open the chosen mic before connecting, so it can't race Daily's device pick) is approved, with the decided fallback. | They match R11–R14 and UX1–UX7. The mic race is the most likely cause of your silent Chrome besides the setting you fixed, so it gets a test. |
+| UXP5 | Other guesses (G6, G8, G11, G13–G15) accepted as written. | Small, reversible, consistent with the design. |
+
+## Audio check final review (2026-11-04)
+
+Branch `feat/audio-check` (IAssistPro). Final review: no Critical; two Important findings fixed, four minors deferred.
+
+| # | Change or ruling | Why |
+|---|---|---|
+| AC1 | **Fixed:** `POST /checks/{id}/end` on a stuck check now cancels it and waits (up to 1 s) for it to stop before freeing the lock; a cancel that follows an End request is recorded as `ended_by_client`. | A hung check's pipeline must not overlap the next interview's. |
+| AC2 | **Fixed, ruling by the architect for you (C3):** checks must stay $0 whatever providers are configured, so a check always builds local speech (whisper; piper or kokoro). A paid TTS such as cartesia is swapped for piper's default voice. Noted in the README and the plan's contract section. | "An audio check that spends money" is an anti-goal; a paid TTS configured for interviews would otherwise be billed for every check. |
+| AC3 | Deferred minor: a peer connection can linger when End arrives while an offer is being answered. | Rare; the lock is still freed. |
+| AC4 | Deferred minor: the `silent_input` log line carries no session/check id. | Log-only; the surrounding lines identify the call. |
+| AC5 | Deferred minor (**JobLens note**): with weak echo cancellation a check may "hear" its own prompt. JobLens can ignore `heard` until the prompt has finished playing (`onBotStoppedSpeaking`). | Cheap client-side guard; the service can't tell echo from speech. |
+| AC6 | Deferred minor: the C2 silence threshold (no sample beyond ±1, at most 5 % non-zero) is proven on Chromium's silent fake mic but not yet on a real quiet room. To be measured in the JobLens live run. | Real-room evidence before tuning. |
+
+## Interview UX builder's calls and results (JobLens `feat/interview-ux`, 2026-11-04)
+
+| # | Call or result | Why |
+|---|---|---|
+| IU1 | Guesses G1–G16 built as written (status per question with `ticked` derived, table-order mix, global in-memory checks ended by `start_session`, no "Default" mic, `answered` count, separate prep runner, tabs with Application as default, full-page check, both steps to pass, keepalive end on leave). G13: the mocked tests stub fixed device ids, because Chromium's fake devices get new ids on every page load. | Approved in UXP4/UXP5; G13 was unverifiable as guessed. |
+| IU2 | K1–K9 reconciled against `bb2a66d` and `docs/contract-changes.md`: no drift in endpoints or messages. One client change: the level bar is log-scaled from the C1 floor (0.0001) to 0.3, so a working quiet mic shows a sliver and only `0.0` (digital silence) is empty. | C1 said to scale the bar with the floor in mind. |
+| IU3 | **Echo guard (AC5):** the check ignores `heard` from Play again or `onBotStartedSpeaking` until `onBotStoppedSpeaking` + 0.8 s (capped at 15 s in case a stop is lost). Unit and e2e tests. | Weak echo cancellation can't pass the check with the interviewer's own words. |
+| IU4 | Task 6 constraint finding: the old `updateMic`-before-connect order also passed "chosen mic reaches the track"; the new order (Daily call object created with the chosen `audioSource` and ec/ns/agc before connect) is kept as it removes a race. `@daily-co/daily-js` 0.94.0 added. | The plan said to keep it either way. |
+| IU5 | **Live check (free, dev):** (a) interviewer audio at 3.4 s, heard "I am ready for my interview." 12.7 s after opening; (b) digital silence → message 2.9 s after connecting; spend $0.0000 both. | Acceptance #1 (simulated) and #2. |
+| IU6 | **C2 on a real mic (AC6):** Intel Smart Sound array, headless Chrome, 15 s with nobody speaking to it: 70 level samples, none at 0, rms ≈ 0.0002–0.010 (median 0.0006); **not flagged `silent_input`**. The room wasn't controlled; Rupak's checklist item 3 repeats it by hand. | The threshold holds for a real quiet mic. |
+| IU7 | **Paid live mock (one run):** on throwaway job aeba724d, moved to Interviewing and back through the API: prepare in the background → check → Begin → first question 5.5 s → rated; reply median 2690 ms, p90 2796 ms; total $0.1609 (prep $0.110, interviewer $0.001, rating $0.050). Session and set deleted; Rupak's job ead54e90 untouched. | The owner's cap was one short run ≤ $0.30. |
+| IU8 | Dev was backed up before the rebuild (`backups/dev-20261104-170651.sql`) and restored after the runs, after checking that the only changes were mine (kept in `dev-20261104-171754-prerestore.sql`). As a result today's dev spend ledger doesn't show the $0.16. | Owner's rule: back up, then restore. |
+| IU9 | The interview-prep live test was moved to the new UI but not run (spend rule); the live mock test now needs `MOCK_E2E_JOB` (a throwaway job with no sessions) and caps spend at $0.30. | Never auto-pick the owner's Interviewing job. |
+| IU10 | Handoff for Rupak (guide §15 checklist): acceptance #1 by hand with Chrome on CABLE, then the Intel mic; acceptance #3, a no-headset interview over ≥ 5 turns, ≤ $0.30. If it self-interrupts, set `BARGE_IN_MIN_S=0.8` on the interviewer (IAssistPro side). | Real Chrome and real speakers can't be automated here. |
+

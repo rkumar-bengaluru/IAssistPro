@@ -31,23 +31,26 @@
     <p id="status">idle</p>
     <button id="leave" type="button">Leave</button>
   </div>
-  <p class="hint">Use headphones, so the interviewer doesn't hear itself. Captions are counted, not shown.</p>
+  <p class="hint">If the interviewer stops when you didn't speak, use headphones. Captions are counted, not shown.</p>
   <audio id="bot" autoplay></audio>
 </main>
 <script type="module">
 // Standalone dev client for the IAssistPro interviewer: Pipecat JS client + SmallWebRTC.
 // Query: ?session=<id>&token=<one-time token>&dur=<seconds before leaving, optional>
+//    or: ?check=<id>&token=…&dur=…  (audio check: says "listen" after the prompt, finishes on the first words heard)
 import { PipecatClient } from "https://esm.sh/@pipecat-ai/client-js@1.16.0";
 import { SmallWebRTCTransport } from "https://esm.sh/@pipecat-ai/small-webrtc-transport@1.11.2?deps=@pipecat-ai/client-js@1.16.0";
 
 const q = new URLSearchParams(location.search);
 const session = q.get("session") || "";
+const check = q.get("check") || "";
 const token = q.get("token") || "";
 const dur = Number(q.get("dur") || 0);
 const T0 = performance.now();
 const now = () => Math.round(performance.now() - T0);
 const state = { events: [], gaps: [], firstBotAudioMs: null, captions: { user: 0, bot: 0 }, done: false, log: [],
-                talkOverMs: 0 };
+                talkOverMs: 0, connectedAt: null,
+                server: { mic_level: 0, mic_level_nonzero: 0, mic_level_nonzero_after_silent: 0, silent_input: [], heard: [], check_ended: [] } };
 window.iassist = state;
 const status = (s) => { document.getElementById("status").textContent = s; state.log.push({ t: now(), s }); console.log("[iassist]", now(), s); };
 const recording = (on) => {
@@ -107,12 +110,41 @@ async function finish(why) {
   state.done = true;
 }
 
-const offerPath = `/sessions/${encodeURIComponent(session)}/offer?token=${encodeURIComponent(token)}`;
+const offerPath = check
+  ? `/checks/${encodeURIComponent(check)}/offer?token=${encodeURIComponent(token)}`
+  : `/sessions/${encodeURIComponent(session)}/offer?token=${encodeURIComponent(token)}`;
+let listening = false;
+const listen = () => { listening = true; status("listen"); client.sendClientMessage("listen"); };
+
+// Server messages (RTVI): mic level and silent input in both modes; heard and check_ended in checks.
+function onServer(d) {
+  if (!d || typeof d !== "object") return;
+  const t = now();
+  if (d.type === "mic_level") {
+    state.server.mic_level += 1;
+    if (d.rms > 0) state.server.mic_level_nonzero += 1;
+    // audio "arriving" after the silent warning: the case that would clear it in a real client
+    if (d.rms > 0 && state.server.silent_input.length) state.server.mic_level_nonzero_after_silent += 1;
+    state.server.mic_level_max = Math.max(state.server.mic_level_max || 0, d.rms);
+  } else if (d.type === "silent_input") {
+    state.server.silent_input.push({ t, reason: d.reason });
+    status("silent_input:" + d.reason);
+  } else if (d.type === "heard") {
+    state.server.heard.push({ t, text: d.text });
+    status("heard:" + (d.text || "").length + " chars");
+    if (check && (d.text || "").trim()) finish("heard");
+    else if (check) listen();   // nothing caught: ask again
+  } else if (d.type === "check_ended") {
+    state.server.check_ended.push({ t, reason: d.reason });
+  }
+}
 const client = new PipecatClient({
   transport: new SmallWebRTCTransport({ waitForICEGathering: true }),
   enableMic: true, enableCam: false,
   callbacks: {
-    onConnected: () => { status("connected"); recording(true); },
+    onConnected: () => { state.connectedAt = now(); status("connected"); recording(true); },
+    onServerMessage: (d) => onServer(d),
+    onBotStoppedSpeaking: () => { if (check && !listening) listen(); },
     onBotReady: () => status("bot-ready"),
     onDisconnected: () => { status("disconnected"); finish("server"); },
     onTransportStateChanged: (s) => status("transport:" + s),

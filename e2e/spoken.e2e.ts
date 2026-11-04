@@ -33,6 +33,7 @@ test("spoken session with the scripted interviewer (free)", async () => {
   expect(r.gaps.length).toBeGreaterThanOrEqual(5);
   expect(r.captions.user).toBeGreaterThan(0);
   expect(r.captions.bot).toBeGreaterThan(0);
+  expect(r.server.mic_level).toBeGreaterThan(0);   // §3.3: sessions stream the interviewer-side mic level
   expect(r.createMs + (r.firstBotAudioMs ?? 1e9)).toBeLessThan(10_000);   // acceptance #1 (models warm)
   expect(validateResult(r.result)).toBe(true);
   // acceptance #2 (AT3): no split answer, no talk-over, and no extra LLM run (greeting + one per answer)

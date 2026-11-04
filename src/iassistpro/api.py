@@ -140,6 +140,27 @@ def create_app(s: Settings | None = None, manager: SessionManager | None = None)
         await manager.delete(session_id)
         return Response(status_code=204)
 
+    # ---- audio checks (UX7): no body; an empty body or {} is accepted
+    @app.post("/checks", status_code=201)
+    async def create_check():
+        return await manager.create_check()
+
+    @app.get("/checks/{check_id}")
+    async def get_check(check_id: str):
+        return manager.check_status(check_id)
+
+    @app.post("/checks/{check_id}/offer")
+    async def post_check_offer(check_id: str, request: Request):
+        return await manager.check_offer(check_id, _token(request), await request.json())
+
+    @app.patch("/checks/{check_id}/offer")
+    async def patch_check_offer(check_id: str, request: Request):
+        return await manager.check_patch(check_id, _token(request), await request.json())
+
+    @app.post("/checks/{check_id}/end", status_code=202)
+    async def end_check(check_id: str):
+        return await manager.end_check(check_id)
+
     @app.get("/dev/client")
     async def dev_client():
         if not s.dev_client or not DEV_CLIENT.exists():
