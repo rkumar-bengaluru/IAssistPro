@@ -123,7 +123,7 @@ async def test_health_loading_then_ready(tmp_path):
         assert (h["status"], h["progress"]["done_mb"], h["contract_version"]) == ("loading_models", 145, 1)
         status.state = "ready"
         h = (await client.get("/health")).json()
-        assert (h["status"], h["progress"], h["live_session"], h["providers"]["llm"]["name"]) == ("ready", None, None, "fake")
+        assert (h["status"], h["progress"], h["busy"], h["providers"]["llm"]["name"]) == ("ready", None, False, "fake")
 
 
 async def test_create_returns_connect_info(client):
@@ -157,7 +157,7 @@ async def test_second_session_while_waiting_is_busy(client):
     c = await create(client)
     r = await client.post("/sessions", json=BRIEF)
     assert r.status_code == 409 and r.json()["detail"]["code"] == "busy"
-    assert r.json()["detail"]["session_id"] == c["session_id"]
+    assert "session_id" not in r.json()["detail"] and c["session_id"] not in r.text   # AF1: ids are never handed out
 
 
 async def test_offer_token_is_single_use(ctx):
@@ -174,7 +174,8 @@ async def test_offer_token_is_single_use(ctx):
     bad = await client.patch(c["connect"]["offer_path"], json={"pc_id": "other", "candidates": []},
                              headers={"X-Session-Token": c["connect"]["token"]})
     assert bad.status_code == 409
-    assert (await client.get("/health")).json()["live_session"] == c["session_id"]
+    h = await client.get("/health")
+    assert h.json()["busy"] is True and "live_session" not in h.json() and c["session_id"] not in h.text
 
 
 async def _state(client, c, want):
@@ -272,7 +273,7 @@ async def test_disconnect_mid_session_keeps_turns_and_frees_lock(ctx):
     await until(lambda: _state(client, c, "ended"))
     res = (await client.get(f"/sessions/{c['session_id']}/result")).json()
     assert res["end_reason"] == "disconnected" and len(res["turns"]) == 2 and res["usage"]
-    assert (await client.get("/health")).json()["live_session"] is None
+    assert (await client.get("/health")).json()["busy"] is False
     await create(client)
 
 
@@ -320,7 +321,7 @@ async def test_restart_recovery_and_lock_free(tmp_path):
     mgr2 = SessionManager(s, SessionStore(Path(s.sessions_dir), 24), mgr.model_status, runner=FakeRunner())
     await mgr2.startup()
     st = mgr2.status(c["session_id"])
-    assert (st["state"], st["error"]) == ("failed", "service_restarted") and mgr2.live_session_id is None
+    assert (st["state"], st["error"]) == ("failed", "service_restarted") and not mgr2.busy
 
 
 async def test_startup_reencodes_pending_audio_in_the_background(tmp_path):
@@ -338,3 +339,13 @@ async def test_startup_reencodes_pending_audio_in_the_background(tmp_path):
     await mgr2.startup()
     await mgr2.audio_recovery   # no raw on disk: the recording is reported failed, never left pending
     assert mgr2.status(sid)["audio_state"] == "failed"
+
+
+def test_session_ids_are_128_bit_random():
+    from iassistpro.manager import new_session_id
+
+    ids = [new_session_id() for _ in range(64)]
+    assert len(set(ids)) == 64 and all(len(i) == 32 and int(i, 16) >= 0 for i in ids)   # 32 hex = 128 bits
+    # every bit varies: unlike uuid4, whose version and variant bits are fixed (122 random bits)
+    bits = [int(i, 16) for i in ids]
+    assert all(any(b >> k & 1 for b in bits) and not all(b >> k & 1 for b in bits) for k in range(128))

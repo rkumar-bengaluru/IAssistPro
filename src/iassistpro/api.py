@@ -101,7 +101,7 @@ def create_app(s: Settings | None = None, manager: SessionManager | None = None)
 
     @app.get("/health")
     async def get_health():
-        return health(s, manager.model_status, manager.live_session_id)
+        return health(s, manager.model_status, busy=manager.busy)
 
     @app.post("/sessions", status_code=201)
     async def create_session(brief: Brief):

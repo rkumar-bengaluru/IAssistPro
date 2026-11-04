@@ -217,3 +217,18 @@ events weren't saved. The 2b real-voice session should watch for it.
 | AF2 | **No shared service secret for now** (local-only accepted). The service stays bound to 127.0.0.1 plus the compose network, as Postgres is (P4). Revisit if the service is ever reachable beyond this laptop or used by a second app. | With AF1, reaching your data needs both local access and an unguessable id. A secret adds a key to every `.env` and every compose file for a threat that local access already wins (YAGNI). |
 | AF3 | **Fix confirmed (Important):** a tool-only LLM re-run goes through the director like any other run. It is budget-checked against the hard cost cap and the time hard stop, and counted. After **2 consecutive** tool-only re-runs with no speech, the fixed closing is spoken without the LLM (`end_reason` `error`, error `"no_speech_loop"`). Tests: `test_tool_only_rerun_is_refused_past_the_cap`, `test_tool_only_rerun_respects_the_time_hard_stop`, `test_two_silent_reruns_force_the_closing`. | The A1/AD2 ceiling depends on the cap being hard on every path, and a model looping on tools must not spend or keep you waiting in silence. |
 | AF4 | **Fix confirmed (Important):** on startup, a session that ended with `audio_state` `pending` and an intact `audio.raw` is re-encoded once in the background; a missing or unreadable raw, or a second failure, gives `audio_state` `failed`. Never left pending until the TTL. Tests: `test_recover_reencodes_pending_audio`, `test_recover_marks_audio_failed_without_raw`. | Your recording shouldn't be lost to a restart when the raw audio is still on disk, and JobLens must get a final answer, not wait 24 h. |
+
+Fix pass for the 2a final review, by the builder (one pass, each fix test-first):
+- **AF3:** `RerunGate`, after the LLM, catches the re-run that Pipecat's assistant aggregator pushes upstream. Each
+  re-run then gets the director's budget check, time hard stop, notes and run count. A third consecutive silent re-run
+  speaks the budget closing text (`end_reason` `error`, error `no_speech_loop`). Re-runs now count in `llm_runs`.
+- **AF4:** the startup re-encode runs once only. An `audio.reencode` marker means a crash during the re-encode itself
+  gives `failed` on the next start. An empty raw gives `none`, as the normal encode does.
+- **AF1:** ids are `secrets.token_hex(16)`; the test checks that every one of the 128 bits varies (uuid4 fixes 6). The
+  `Result.session_id` schema now has a description; the README and the plan's "Service interface" are updated.
+
+Deferred minors from the 2a final review (not fixed; for you to decide):
+- Runtime check of the aioice version (the ICE port patch assumes 0.12.1).
+- `DELETE` while the audio is still pending (the encode may then write into a removed folder).
+- Unauthenticated 500 on a malformed offer body; the 404 it can return is not in the contract.
+- Race between the director's restore (resume merge) and a tool handler already scheduled for the cancelled reply.

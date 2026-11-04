@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import secrets
 import time
-import uuid
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -72,6 +71,12 @@ def _now() -> datetime:
 
 def _iso(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def new_session_id() -> str:
+    """128 random bits (32 hex). The id is the only key to a session's result and audio, so it is unguessable and
+    never handed out except to the creator (AF1)."""
+    return secrets.token_hex(16)
 
 
 def _hash(token: str) -> str:
@@ -196,8 +201,8 @@ class SessionManager:
         self.audio_recovery: asyncio.Task | None = None
 
     @property
-    def live_session_id(self) -> str | None:
-        return self._active.session_id if self._active else None
+    def busy(self) -> bool:
+        return self._active is not None
 
     def _webrtc_handler(self):
         if self._webrtc is None:
@@ -229,12 +234,12 @@ class SessionManager:
     async def create(self, brief: Brief) -> dict:
         async with self._lock:
             await self._expire_waiting()
-            h = health(self.s, self.model_status, self.live_session_id)
+            h = health(self.s, self.model_status, busy=self.busy)
             if h["status"] != "ready":
                 raise NotReady("the interviewer is not ready", status=h["status"])
             if self._active is not None:
-                raise Busy("a session is already waiting or live", session_id=self._active.session_id)
-            sid = uuid.uuid4().hex
+                raise Busy("a session is already waiting or live")
+            sid = new_session_id()
             token = secrets.token_urlsafe(32)
             live = LiveSession(self, brief, sid, token, self.s.connect_token_ttl_s)
             self.store.create(sid, SessionMeta.from_brief(brief, _now()))

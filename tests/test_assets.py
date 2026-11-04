@@ -42,7 +42,7 @@ async def test_download_failure_is_reported(settings, monkeypatch):
 def test_missing_key_is_an_error_state(settings):
     status = ModelStatus()
     status.state = "ready"
-    h = health(settings, status, None)
+    h = health(settings, status, busy=False)
     assert (h["status"], h["error"]) == ("error", "missing_key:ANTHROPIC_API_KEY")
 
 
@@ -50,8 +50,9 @@ def test_fake_llm_needs_no_key(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     status = ModelStatus()
     status.state = "ready"
-    h = health(Settings(), status, "abc")
-    assert (h["status"], h["error"], h["live_session"], h["progress"]) == ("ready", None, "abc", None)
+    h = health(Settings(), status, busy=True)
+    assert (h["status"], h["error"], h["busy"], h["progress"]) == ("ready", None, True, None)
+    assert "live_session" not in h
     assert h["version"] == "0.1.0" and h["contract_version"] == 1 and h["providers"]["llm"]["name"] == "fake"
 
 
@@ -59,11 +60,11 @@ def test_loading_health_has_progress(monkeypatch):
     monkeypatch.setenv("LLM_PROVIDER", "fake")
     status = ModelStatus()
     status.total_mb, status.done_mb, status.current = 208, 145, "piper:en_US-lessac-medium"
-    h = health(Settings(), status, None)
+    h = health(Settings(), status, busy=False)
     assert h["status"] == "loading_models" and h["progress"] == {"done_mb": 145, "total_mb": 208, "current": "piper:en_US-lessac-medium"}
 
 
 def test_unknown_provider_is_a_config_error(monkeypatch):
     monkeypatch.setenv("TTS_PROVIDER", "nope")
-    h = health(Settings(), ModelStatus(), None)
+    h = health(Settings(), ModelStatus(), busy=False)
     assert h["status"] == "error" and h["error"].startswith("config:unknown TTS_PROVIDER 'nope'")

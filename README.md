@@ -50,7 +50,7 @@ Errors are `{"detail": {"code": "<code>", "message": "<text>", ...}}`.
 | Method, path | Success | Errors |
 |---|---|---|
 | `GET /health` | 200 `Health` (always 200 while the process is up) | – |
-| `POST /sessions` body `Brief` | 201 `{session_id, connect}` | 422 `invalid_brief`; 409 `busy` (+`session_id`); 503 `not_ready` (+`status`) |
+| `POST /sessions` body `Brief` | 201 `{session_id, connect}` | 422 `invalid_brief`; 409 `busy` (no session id); 503 `not_ready` (+`status`) |
 | `GET /sessions/{id}` | 200 `Status` | 404 `unknown_session` |
 | `POST /sessions/{id}/offer` (SDP offer JSON; token in `X-Session-Token` or `?token=`) | 200 SDP answer `{sdp, type, pc_id}` | 401 `token_invalid`; 410 `token_expired`; 409 `wrong_state` |
 | `PATCH /sessions/{id}/offer` (`{pc_id, candidates}`, same token) | 200 `{"status":"success"}` | as above |
@@ -68,8 +68,11 @@ Errors are `{"detail": {"code": "<code>", "message": "<text>", ...}}`.
 server-side in `X-Session-Token`; `?token=` exists for the dev client.
 
 `Health.status` is `loading_models` (with `progress: {done_mb, total_mb, current}`), `ready`, or `error` with
-`error` one of `missing_key:<VAR>`, `model_download_failed:<asset>`, `config:<message>`. A down service is
-"connection refused".
+`error` one of `missing_key:<VAR>`, `model_download_failed:<asset>`, `config:<message>`. `Health.busy` is true while
+a session is waiting or live. A down service is "connection refused".
+
+A session id is 128 random bits (32 hex characters) and is the only key to that session's status, result and audio.
+It is returned only to the caller that created the session: health and `409 busy` never carry it.
 
 `Status` is `{session_id, state: waiting|live|ended|failed, elapsed_s, current_question_id, question_number,
 questions_total, turn_kind, end_reason, error, audio_state: pending|ready|none|failed}`. Lifecycle: `waiting` →

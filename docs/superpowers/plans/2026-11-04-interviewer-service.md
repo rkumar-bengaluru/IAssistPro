@@ -66,7 +66,7 @@ Container listens on `PORT` (default `8000`). Media uses the UDP range in `ICE_P
 | Method, path | Success | Errors |
 |---|---|---|
 | `GET /health` | 200 `Health` (always 200 while the process is up) | – |
-| `POST /sessions` body `Brief` | 201 `{session_id, connect}` | 422 `invalid_brief`; 409 `busy` (+`session_id` of the waiting/live one); 503 `not_ready` (+`status`) |
+| `POST /sessions` body `Brief` | 201 `{session_id, connect}` | 422 `invalid_brief`; 409 `busy` (no session id; AF1); 503 `not_ready` (+`status`) |
 | `GET /sessions/{id}` | 200 `Status` | 404 `unknown_session` |
 | `POST /sessions/{id}/offer` (SmallWebRTC SDP offer JSON; token in `X-Session-Token` header or `?token=`) | 200 SDP answer JSON (Pipecat's `{sdp, type, pc_id}`) | 401 `token_invalid`; 410 `token_expired`; 409 `wrong_state` |
 | `PATCH /sessions/{id}/offer` (`{pc_id, candidates}`, same token) | 200 `{"status":"success"}` | as above |
@@ -79,7 +79,7 @@ Container listens on `PORT` (default `8000`). Media uses the UDP range in `ICE_P
 
 `connect` is `{"transport": "smallwebrtc", "offer_path": "/sessions/{id}/offer", "token": "<one-time>", "expires_at": "<ISO 8601 UTC>"}`. For websocket it is `{"transport": "websocket", "ws_path": "/sessions/{id}/ws", "token": "…", "expires_at": "…", "audio": {"in_sample_rate": 16000, "out_sample_rate": 24000}}`. A token works for one offer within `CONNECT_TOKEN_TTL_S`; after that the same token is accepted only for `PATCH` on that session's `pc_id` until it ends.
 
-`Health`: `{"status": "loading_models" | "ready" | "error", "version": "0.1.0", "contract_version": 1, "progress": {"done_mb": int, "total_mb": int, "current": str} | null, "error": null | "missing_key:<VAR>" | "model_download_failed:<asset>" | "config:<message>", "providers": {"stt": {"name", "model", "remote": bool}, "tts": {"name", "voice", "remote": bool}, "llm": {"name", "model"}, "transport": "smallwebrtc" | "websocket"}, "live_session": null | "<id>"}`. A down service is "connection refused"; 2b maps the three states to its §7.3 lines.
+`Health`: `{"status": "loading_models" | "ready" | "error", "version": "0.1.0", "contract_version": 1, "progress": {"done_mb": int, "total_mb": int, "current": str} | null, "error": null | "missing_key:<VAR>" | "model_download_failed:<asset>" | "config:<message>", "providers": {"stt": {"name", "model", "remote": bool}, "tts": {"name", "voice", "remote": bool}, "llm": {"name", "model"}, "transport": "smallwebrtc" | "websocket"}, "busy": bool}` (`busy` replaced `live_session` under AF1: a session id, 128 random bits, is given only to its creator). A down service is "connection refused"; 2b maps the three states to its §7.3 lines.
 
 `Status`: `{"session_id", "state": "waiting" | "live" | "ended" | "failed", "elapsed_s": float, "current_question_id": str | null, "question_number": int, "questions_total": int, "turn_kind": "greeting" | "main" | "follow_up" | "closing" | null, "end_reason": EndReason | null, "error": str | null, "audio_state": "pending" | "ready" | "none" | "failed"}`. Lifecycle: `waiting` → (offer) `live` → `ended`. Error paths go to `failed`: `waiting` → `failed` (`not_connected`, after the token TTL), and a crash or restart → `failed`. Audio goes `pending` → `ready` about a minute after `ended`. The result is available immediately and doesn't wait for the audio (AS5).
 

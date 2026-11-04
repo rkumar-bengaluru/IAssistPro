@@ -132,7 +132,8 @@ def _providers_or_raw(s: Settings) -> dict:
                 "llm": {"name": s.llm_provider, "model": s.llm_model}, "transport": s.transport}
 
 
-def health(s: Settings, status: ModelStatus, live_session: str | None) -> dict:
+def health(s: Settings, status: ModelStatus, *, busy: bool) -> dict:
+    """The Health JSON. It never carries a session id: an id is the key to that session's data (AF1)."""
     state, error = status.state, status.error
     try:
         missing = required_keys(s)
@@ -146,5 +147,5 @@ def health(s: Settings, status: ModelStatus, live_session: str | None) -> dict:
         progress = {"done_mb": status.done_mb, "total_mb": status.total_mb, "current": status.current}
     return {
         "status": state, "version": __version__, "contract_version": CONTRACT_VERSION, "progress": progress,
-        "error": error, "providers": _providers_or_raw(s), "live_session": live_session,
+        "error": error, "providers": _providers_or_raw(s), "busy": busy,
     }

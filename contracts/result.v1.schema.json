@@ -266,6 +266,7 @@
       "type": "number"
     },
     "session_id": {
+      "description": "128 random bits as 32 hex characters; known only to the session's creator (AF1).",
       "title": "Session Id",
       "type": "string"
     },

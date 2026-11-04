@@ -150,7 +150,8 @@ class Latency(_Model):
 
 class Result(_Model):
     version: Literal[1]
-    session_id: str
+    session_id: str = Field(
+        description="128 random bits as 32 hex characters; known only to the session's creator (AF1).")
     end_reason: EndReason
     error: str | None
     started_at: datetime | None
