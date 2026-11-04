@@ -211,3 +211,111 @@ def test_director_does_not_advance_on_a_cancelled_reply(example_brief):
     st.restore(snap)
     assert (st.current_question_id, st.current_kind, st.question_number) == ("q1", "main", 1)
     assert st.tracker.follow_ups("q1") == 0 and st.tracker.main_asked == 1
+
+
+# ---- BARGE_IN_MIN_S: a barge-in floor while the interviewer speaks (UX5, UXP3)
+
+def test_barge_in_floor_defaults_to_off():
+    from pipecat.turns.user_start import TranscriptionUserTurnStartStrategy, VADUserTurnStartStrategy
+
+    from iassistpro.providers import make_turn_strategies
+
+    s = Settings()
+    assert s.barge_in_min_s == 0.0
+    strategies, _vad = make_turn_strategies(s)
+    assert [type(x) for x in strategies.start] == [VADUserTurnStartStrategy, TranscriptionUserTurnStartStrategy]
+
+
+def test_barge_in_floor_setting_selects_the_floor(monkeypatch):
+    from pydantic import ValidationError
+
+    from iassistpro.providers import make_turn_strategies
+    from iassistpro.turns import BargeInFloorStartStrategy
+
+    monkeypatch.setenv("BARGE_IN_MIN_S", "0.8")
+    strategies, _vad = make_turn_strategies(Settings())
+    assert [type(x) for x in strategies.start] == [BargeInFloorStartStrategy]
+    assert strategies.start[0].min_s == 0.8
+    monkeypatch.setenv("BARGE_IN_MIN_S", "4")
+    with pytest.raises(ValidationError):
+        Settings()
+
+
+class FloorDriver:
+    def __init__(self, min_s: float = 0.6):
+        from iassistpro.turns import BargeInFloorStartStrategy
+
+        self.strategy = BargeInFloorStartStrategy(min_s=min_s)
+        self.started = 0
+        self.resets = 0
+
+        async def on_started(_s, _params):
+            self.started += 1
+            await self.strategy.handle_user_turn_started()  # what the turn controller does
+
+        async def on_reset(_s):
+            self.resets += 1
+
+        self.strategy.add_event_handler("on_user_turn_started", on_started)
+        self.strategy.add_event_handler("on_reset_aggregation", on_reset)
+
+    async def setup(self):
+        await self.strategy.setup(SimpleNamespace(task_manager=TaskManager(), audio_in_sample_rate=16000))
+        return self
+
+    async def send(self, frame):
+        await self.strategy.process_frame(frame)
+
+    async def audio(self, seconds: float):
+        for _ in range(round(seconds * 100)):
+            await self.send(InputAudioRawFrame(audio=bytes(320), sample_rate=16000, num_channels=1))
+
+    async def vad_start(self, start_secs: float = 0.2):
+        await self.send(VADUserStartedSpeakingFrame(start_secs=start_secs, timestamp=time.time()))
+
+    async def vad_stop(self):
+        await self.send(VADUserStoppedSpeakingFrame(stop_secs=VAD_STOP_S, timestamp=time.time()))
+
+
+async def test_floor_starts_at_once_when_the_bot_is_silent():
+    d = await FloorDriver().setup()
+    await d.vad_start()
+    assert d.started == 1
+
+
+async def test_floor_ignores_short_speech_while_the_bot_speaks():
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+
+    d = await FloorDriver().setup()
+    await d.send(BotStartedSpeakingFrame())
+    await d.vad_start(0.2)
+    await d.audio(0.3)
+    await d.vad_stop()
+    assert (d.started, d.resets) == (0, 1)
+
+
+async def test_floor_interrupts_after_min_s_of_speech():
+    from pipecat.frames.frames import BotStartedSpeakingFrame
+
+    d = await FloorDriver(min_s=0.8).setup()
+    await d.send(BotStartedSpeakingFrame())
+    await d.vad_start(0.2)
+    await d.audio(0.59)
+    assert d.started == 0
+    await d.audio(0.02)
+    assert d.started == 1
+
+
+async def test_floor_drops_the_late_transcript_of_rejected_speech():
+    from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+
+    d = await FloorDriver(min_s=0.8).setup()
+    await d.send(BotStartedSpeakingFrame())
+    await d.vad_start(0.2)
+    await d.audio(0.3)   # a 0.5 s echo burst of the interviewer's own voice
+    await d.vad_stop()
+    await d.send(BotStoppedSpeakingFrame())
+    await d.send(TranscriptionFrame("hello", "u", "t"))
+    assert d.started == 0 and d.resets >= 2
+    await d.vad_start()
+    assert d.started == 1

@@ -7,8 +7,10 @@ Silence is counted from the audio frames themselves (not wall time), so it is ex
 """
 
 from pipecat.frames.frames import (
-    Frame, InputAudioRawFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, Frame, InputAudioRawFrame, InterimTranscriptionFrame,
+    TranscriptionFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
 )
+from pipecat.turns.user_start.base_user_turn_start_strategy import BaseUserTurnStartStrategy
 from pipecat.turns.user_stop.base_user_turn_stop_strategy import BaseUserTurnStopStrategy
 
 
@@ -87,6 +89,64 @@ class GraceUserTurnStopStrategy(BaseUserTurnStopStrategy):
         params, self._pending = self._pending, None
         await self.report_user_turn_stopped(enable_user_speaking_frames=params.enable_user_speaking_frames,
                                             confirms_speculation=params.confirms_speculation)
+
+
+class BargeInFloorStartStrategy(BaseUserTurnStartStrategy):
+    """A turn start that needs `min_s` of continuous speech while the interviewer is speaking (UX5, no headset).
+
+    With the interviewer silent it behaves like Pipecat's defaults (VAD start, or a transcript). While the interviewer
+    speaks, speech is counted from VAD's `start_secs` plus the audio received while VAD says speaking; the turn starts
+    (and interrupts) once the count reaches `min_s`. A segment that ends sooner is rejected: aggregation is reset and
+    every transcript up to the next VAD start is dropped, even one arriving after the interviewer stopped (the late
+    transcript of an echo). A segment that began during interviewer speech keeps the floor if the interviewer stops
+    mid-segment, so an echo tail is still judged by its length.
+    """
+
+    def __init__(self, *, min_s: float, **kwargs):
+        super().__init__(**kwargs)
+        self.min_s = min_s
+        self._bot_speaking = False
+        self._vad_speaking = False
+        self._counting = False
+        self._speech_s = 0.0
+        self._rejected = False
+
+    async def handle_user_turn_started(self):
+        self._counting, self._speech_s, self._rejected = False, 0.0, False
+        await super().handle_user_turn_started()
+
+    async def _check(self) -> None:
+        if self._counting and self._speech_s >= self.min_s - 1e-9:
+            self._counting = False
+            await self.report_user_turn_started()
+
+    async def process_frame(self, frame: Frame):
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._vad_speaking, self._rejected = True, False
+            if self._bot_speaking:
+                self._counting, self._speech_s = True, frame.start_secs or 0.0
+                await self._check()
+            else:
+                await self.report_user_turn_started()
+        elif isinstance(frame, InputAudioRawFrame):
+            if self._counting and self._vad_speaking:
+                channels = frame.num_channels or 1
+                self._speech_s += len(frame.audio) / (2 * channels * frame.sample_rate)
+                await self._check()
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._vad_speaking = False
+            if self._counting:
+                self._counting, self._rejected = False, True
+                await self.trigger_reset_aggregation()
+        elif isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
+            if self._rejected:
+                await self.trigger_reset_aggregation()
+            elif not self._counting:
+                await self.report_user_turn_started()
 
 
 class ResumeTracker:
