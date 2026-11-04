@@ -55,8 +55,9 @@ Anti-goals (would be a failure even if it works)
 ## 3. Constraints
 
 - **Hardware:** Intel i5-1235U (10 cores / 12 threads), 16 GB RAM, Intel Iris Xe — **no CUDA GPU**. All local models
-  run on CPU. Rupak: "use all resources of this laptop for this job": local models use all CPU threads available to
-  Docker; Docker Desktop's WSL limit should allow all 12 threads and at least 8 GB.
+  run on CPU. Rupak: "use all resources of this laptop for this job": Docker sees all 12 threads, but each model's
+  thread count is a setting tuned for speed (STT 4, TTS 4, smart-turn 1). On this hybrid CPU, 12 threads made Whisper
+  2× slower (spike; AS5).
 - **Same Windows machine, Docker Compose**, dev and prod stacks as today (JobLens feature 3). Ports bound to
   127.0.0.1 only (P4). Prod runs tagged releases only (D6).
 - JobLens stack: FastAPI, SQLAlchemy 2, Alembic (head 0014), Postgres, Azurite, React/Vite/TanStack Query/Tailwind.
@@ -109,26 +110,32 @@ The interviewer knows nothing about JobLens. Any app able to send a brief can us
 
 ### 5.2 Pipeline
 
-- **Voice activity + end of turn:** Silero VAD plus Pipecat's local smart-turn analyser if it runs acceptably on CPU
-  (spike decides), else VAD with a silence threshold (start ~0.8 s, configurable). Rupak must be able to pause to
+- **Voice activity + end of turn:** Silero VAD (`stop_secs` 0.2) plus Pipecat's local smart-turn v3 (ONNX, no torch;
+  spike: 12/12 turns, no cut-offs across 64 pauses); a silence threshold (~0.8 s) stays as a config fallback. Rupak must be able to pause to
   think without being cut off: the end-of-turn rule errs towards waiting.
 - **Interruptions:** Rupak speaking while the agent talks stops the agent's audio (barge-in). Headphones recommended
   in the UI to avoid the agent hearing itself (§5.3).
-- **STT:** `faster-whisper`, CPU, int8. Default model chosen by the spike for best accuracy at an acceptable
-  latency (candidates `base.en`, `small.en`, `distil-small.en`); threads = all available.
-- **LLM (interviewer):** Claude through Pipecat's Anthropic service, streaming. Default model `claude-sonnet-5-5`
-  (follow-up quality is the point of the feature); configurable, `claude-haiku-5-5` as the low-latency fallback the
-  spike may choose instead. Prompt caching on the brief (it is constant for the session).
-- **TTS:** Kokoro (local, CPU), one English voice chosen by config; sentence-level streaming so speech starts before
-  the whole reply is written.
-- **Recorder:** captures both sides into one mono track (and optionally two tracks) for the session; output format
-  16 kHz mono, compressed (Ogg/Opus) if a dependency-light encoder is available, else WAV. Builder's call, recorded.
+- **STT:** `faster-whisper` `base.en`, CPU, int8, beam 1, `cpu_threads` 4 (spike; Pipecat's defaults of beam 5
+  and unset threads are overridden). `small.en` is the config fallback if your real voice transcribes badly (AS5).
+- **LLM (interviewer):** Claude through Pipecat's Anthropic service, streaming. Default model `claude-haiku-5-5`
+  (AS2: ~2 s faster per reply than Sonnet); `claude-sonnet-5-5` selectable in JobLens Settings ("Interviewer
+  model", with "slower replies, ~6 s") and passed in the brief. Pipecat's lowest thinking setting for each model is
+  kept (`disabled` for Haiku, `between_tools` for Sonnet); never adaptive thinking. Prompt caching on the brief when it
+  reaches the minimum cacheable size; it isn't padded to get there.
+- **TTS:** **Piper** `en_US-lessac-medium` (local, CPU; 0.19 s to first audio) is the default; Kokoro
+  (`af_heart`, int8) is a config option (AS1). Sentence-level streaming. `stop_frame_timeout_s` is raised to 10 s,
+  or Pipecat drops a reply whose audio takes more than 3 s to start.
+- **Recorder:** `AudioBufferProcessor` (both sides, 16 kHz); the result is mono Ogg/Opus via `soundfile`, encoded
+  once at session end off the event loop (stereo WAV only as a debug option).
 - **Transcript:** every turn with speaker (`interviewer`/`candidate`), text, start/end offsets in ms from session
   start, and the `question_id` it belongs to (§5.4).
 
-### 5.3 Transport (the spike decides)
+### 5.3 Transport (decided: SmallWebRTC, AS4)
 
-Two Pipecat transports fit; the first task of the plan is a spike that measures both on this laptop and picks one:
+**SmallWebRTC is the transport**, with a ~30-line aioice patch (bind a fixed UDP port range, advertise `127.0.0.1`).
+aiortc/aioice are pinned exactly, and a canary test fails if the patched internals change. WebSocket stays as a
+config fallback (`TRANSPORT=websocket`, no patch). Each stack publishes its own 3-port UDP range on 127.0.0.1
+(prod 40000–40002, dev 40010–40012). The spike measured both options:
 
 - **SmallWebRTC** (browser ↔ container, peer-to-peer, no Daily account). Best audio handling (browser echo
   cancellation, jitter buffer). Risk: WebRTC media from a container under Docker Desktop on Windows needs ICE to
@@ -153,7 +160,10 @@ System prompt built from the brief. The interviewer:
   skips half of the question; otherwise **move on**.
 - Signals structure through **tool calls** so the service knows where it is: `ask_question(question_id)` before a
   main question, `follow_up(question_id)` before a follow-up, `end_interview(reason)` to wrap up. The transcript's
-  `question_id` comes from these calls, not from parsing text.
+  `question_id` comes from these calls, not from parsing text. The tool calls must not add an LLM round trip before
+  speech: the reply's text and its tool call come in the same response, and the tool result doesn't trigger another
+  LLM run (AS5).
+- Opens each turn with a short clause ("Thanks. And how did you…"), so the first sentence reaches TTS fast (AS3).
 - Never gives feedback, scores, hints or the "strong answer" notes during the session; stays in character; short
   turns (one question at a time, no multi-part monologues); polite, neutral, realistic.
 - Ends when: all main questions are done, the time limit is reached (it finishes the current exchange and wraps up),
@@ -177,8 +187,9 @@ System prompt built from the brief. The interviewer:
 
 Environment / settings in the service, one value each:
 - `STT_PROVIDER=whisper` (later: `deepgram`, `assemblyai`, …), `STT_MODEL`
-- `TTS_PROVIDER=kokoro` (later: `cartesia`, `elevenlabs`, …), `TTS_VOICE`
+- `TTS_PROVIDER=piper` (or `kokoro`; later: `cartesia`, `elevenlabs`, …), `TTS_VOICE`
 - `LLM_PROVIDER=anthropic`, `LLM_MODEL`
+- `TRANSPORT=smallwebrtc|websocket`, `ICE_PORTS`, `ICE_HOST`; thread counts `STT_THREADS=4`, `TTS_THREADS=4`
 - Provider keys (`DEEPGRAM_API_KEY`, …) read only when that provider is selected.
 
 A small factory maps each value to a Pipecat service. Adding a paid provider = one mapping entry + its key, no other
@@ -222,7 +233,7 @@ contract test against the example files.
   ],
   "limits": {"max_minutes": 25, "max_main_questions": 8, "max_follow_ups": 2, "max_llm_cost_usd": 0.50},
   "llm_prices_per_mtok": {"input": 2, "cached_input": 0.10, "cache_write": 2.50, "output": 10},
-  "llm_model": "claude-sonnet-5-5",
+  "llm_model": "claude-haiku-5-5",
   "language": "en"
 }
 ```
@@ -285,7 +296,8 @@ interviewer." Button: **Prepare questions (~$0.0x)** with its estimate (R23/O6).
   `max_llm_cost_usd` + rating estimate (AD2). Refused with the usual message if `ensure_can_start` blocks, **and**
   refused unless today's spend + the ceiling fits under the hard cap, with the numbers in the message (A1). One live
   session at a time.
-- First time only: a short check panel — "Use headphones", microphone picker, a level meter — then Start.
+- First time only: a short check panel — "Use headphones", microphone picker, a level meter, and "Plugged in and on
+  Best performance power mode gives quicker replies" — then Start.
 - JobLens creates `mock_sessions` row (`starting`), builds the brief (§6.1) from the ticked questions, calls
   `POST /sessions`, returns connect info to the browser, which connects (§5.3).
 - Live screen (full page, minimal): role and company, timer against the limit, current question number ("Question
@@ -295,9 +307,11 @@ interviewer." Button: **Prepare questions (~$0.0x)** with its estimate (R23/O6).
 
 ### 7.4 After the session
 
-1. JobLens fetches result + audio and, **in this order** (A1): stores audio in Azurite at
-   `interviews/{job_id}/{session_id}.{ext}` and the transcript in the row; then records the interviewer's LLM usage
-   as `LlmCall` rows (phase `interview`, job_id set) priced from the catalog; then `DELETE`s the service copy.
+1. JobLens fetches the result and, **in this order** (A1): stores the transcript in the row; then records the
+   interviewer's LLM usage as `LlmCall` rows (phase `interview`, job_id set) priced from the catalog. The audio is
+   encoded after the session (it can take a minute), so JobLens fetches it when the service reports it ready, stores
+   it in Azurite at `interviews/{job_id}/{session_id}.{ext}`, and only then `DELETE`s the service copy. Rating doesn't
+   wait for the audio; "play from here" appears once it's stored (AS5).
    Session → `rating`. If recording the usage trips the hard cap (`record()` commits, then raises
    `HardCapExceeded`), the error is caught and the session goes to `rating_failed` with "Today's hard cap was
    reached. Your recording and transcript are saved; Retry rating after midnight." The same message applies if the
@@ -341,7 +355,8 @@ interviewer." Button: **Prepare questions (~$0.0x)** with its estimate (R23/O6).
 
 - **One interviewer per stack** (A2). JobLens's `docker-compose.yml` gains an `interviewer` service built from
   `${IASSISTPRO_DIR:-../IAssistPro}` with **no `image:` key** (images are project-scoped, like JobLens's), port
-  127.0.0.1-bound, its own per-project models volume, env via explicit `environment:` entries, not `env_file:` (only
+  127.0.0.1-bound (HTTP plus the stack's UDP range, §5.3), its own per-project models volume (base.en + one Piper
+  voice), env via explicit `environment:` entries, not `env_file:` (only
   the keys it needs). JobLens reaches it on the compose network (`INTERVIEWER_URL`).
   - **Prod:** profile `app`, `restart: unless-stopped`. `ops/prod.ps1 up <joblens-tag> -Interviewer <iassistpro-tag>`
     checks out a detached worktree `..\IAssistPro-prod` at that tag (as for JobLens) and passes its **absolute** path
@@ -405,8 +420,9 @@ JobLens:
    the first question within 10 seconds of Start (models already downloaded).
 2. A 15–25 minute session runs without the agent cutting Rupak off mid-thought or talking over them (with headphones);
    it asks follow-ups that refer to what they actually said.
-3. Median reply gap ≤ 3.5 s on this laptop with local speech (target; the spike reports the real number and the
-   architect accepts or adjusts the model choices).
+3. Reply gap (end of your speech → first interviewer audio, measured in the browser) with the defaults (Piper +
+   Haiku, base.en): median ≤ 4.0 s and p90 ≤ 5.0 s on this laptop (AS3; the spike measured 3.9 / 4.0 s). The
+   original 3.5 s target is left to paid streaming speech later (R6).
 4. After End, results appear within ~1 minute: scores, reasons, missed points, better answers with no invented facts,
    and the recording plays from each answer.
 5. Spend for the session appears in today's spend.
@@ -415,5 +431,4 @@ JobLens:
 
 ## 12. Left to the builder
 
-Exact Pipecat version and classes; file layout; recorder format; Whisper model size and smart-turn vs silence
-threshold (spike); Kokoro voice; UI layout details within §7; prompt wording within §5.4/§7.2/§7.4 rules.
+Exact Pipecat version and classes (1.15.0 at the spike); file layout; UI layout details within §7; prompt wording within §5.4/§7.2/§7.4 rules.
