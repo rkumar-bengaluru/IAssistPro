@@ -202,7 +202,8 @@ class InterviewDirector(FrameProcessor):
     def __init__(self, state: InterviewState, llm, *, elapsed: Callable[[], float],
                  on_label: Callable[[str | None, str], None] | None = None,
                  on_progress: Callable[[str | None, str, int], None] | None = None,
-                 close_timeout_s: float = 15.0, settle_s: float = 0.7, tick_s: float = 1.0, **kwargs):
+                 close_timeout_s: float = 15.0, settle_s: float = 0.7, tick_s: float = 1.0,
+                 interrupt_settle_s: float = 0.3, **kwargs):
         super().__init__(**kwargs)
         self.state = state
         self.llm = llm
@@ -212,6 +213,7 @@ class InterviewDirector(FrameProcessor):
         self.close_timeout_s = close_timeout_s
         self.settle_s = settle_s
         self.tick_s = tick_s
+        self.interrupt_settle_s = interrupt_settle_s
         self.probe = SpokenTextProbe()
         self.probe.attach(llm)
         self.llm_runs = 0
@@ -235,11 +237,22 @@ class InterviewDirector(FrameProcessor):
         outcome = self.state.on_tool(params.function_name, dict(params.arguments or {}), self.probe.had_text)
         if outcome.run_llm:
             log_event("tool_without_text", tool=params.function_name)
-        self.on_label(self.state.current_question_id, self.state.current_kind)
+        await self._label(self.state.current_question_id, self.state.current_kind, via_llm=True)
         self.on_progress(self.state.current_question_id, self.state.current_kind, self.state.question_number)
         if self.state.ending:
             self._start_ending(fresh=False)
         await params.result_callback(outcome.result, properties=FunctionCallResultProperties(run_llm=outcome.run_llm))
+
+    async def _label(self, question_id, kind, *, via_llm: bool = False) -> None:
+        """Put the label in the frame stream (in order with the reply it belongs to) and tell on_label."""
+        from .transcript import TurnLabelFrame
+
+        self.on_label(question_id, kind)
+        frame = TurnLabelFrame(question_id=question_id, kind=kind)
+        if via_llm:
+            await self.llm.push_frame(frame)
+        else:
+            await self.push_frame(frame)
 
     # ---- frames
     async def process_frame(self, frame, direction):
@@ -293,7 +306,7 @@ class InterviewDirector(FrameProcessor):
         self.state.mark_hard_stop(reason)
         text = (CLOSE_TIME if reason == "time_limit" else CLOSE_BUDGET).format(name=self.name_for_closing)
         log_event("hard_stop", reason=reason)
-        self.on_label(None, "closing")
+        await self._label(None, "closing")
         self.on_progress(None, "closing", self.state.question_number)
         self._start_ending(fresh=True)
         await self.push_frame(TTSSpeakFrame(text))
@@ -310,7 +323,9 @@ class InterviewDirector(FrameProcessor):
         if was_ending:
             return
         await self.broadcast_interruption()
-        self.on_label(None, "closing")
+        # Let the interruption flush a reply that was already in flight, so the closing is heard on its own.
+        await asyncio.sleep(self.interrupt_settle_s)
+        await self._label(None, "closing")
         self.on_progress(None, "closing", self.state.question_number)
         self._start_ending(fresh=True)
         await self.push_frame(TTSSpeakFrame(CLOSE_ENDED.format(name=self.name_for_closing)))
@@ -326,7 +341,7 @@ class InterviewDirector(FrameProcessor):
                 and time.monotonic() - self._last_bot_stop >= self.settle_s)
 
     async def _end_watch(self) -> None:
-        from pipecat.frames.frames import EndTaskFrame
+        from pipecat.frames.frames import EndWorkerFrame
         from pipecat.processors.frame_processor import FrameDirection
 
         deadline = time.monotonic() + self.close_timeout_s
@@ -336,7 +351,7 @@ class InterviewDirector(FrameProcessor):
                 break
             await asyncio.sleep(0.05)
         self._ended = True
-        await self.push_frame(EndTaskFrame(), FrameDirection.UPSTREAM)
+        await self.push_frame(EndWorkerFrame(), FrameDirection.UPSTREAM)
 
     async def _timer(self) -> None:
         # Time is also enforced while nobody speaks. Budget is checked only before an LLM run, so a candidate
