@@ -6,6 +6,7 @@ Notes to the model are appended as an extra text block on the last user message 
 """
 
 import asyncio
+import copy
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -52,6 +53,17 @@ class InterviewState:
         self._disconnected = False
         self._error = False
         self._notes_sent: set[str] = set()
+
+    # ---- resume merge (AT2): a reply cancelled by a resumed answer must leave no trace in the state
+    _SNAPSHOT_SKIP = ("brief", "meter", "planned_ids", "_notes_sent")
+
+    def snapshot(self) -> dict:
+        return {k: copy.deepcopy(v) for k, v in self.__dict__.items() if k not in self._SNAPSHOT_SKIP}
+
+    def restore(self, snap: dict) -> None:
+        # Notes already sent stay sent (they are in the context); spend stays spent.
+        for k, v in snap.items():
+            setattr(self, k, copy.deepcopy(v))
 
     # ---- tools
     def on_tool(self, name: str, args: dict, response_had_text: bool) -> ToolOutcome:
@@ -203,8 +215,14 @@ class InterviewDirector(FrameProcessor):
                  on_label: Callable[[str | None, str], None] | None = None,
                  on_progress: Callable[[str | None, str, int], None] | None = None,
                  close_timeout_s: float = 15.0, settle_s: float = 0.7, tick_s: float = 1.0,
-                 interrupt_settle_s: float = 0.3, **kwargs):
+                 interrupt_settle_s: float = 0.3, resume_window_s: float = 0.0, **kwargs):
         super().__init__(**kwargs)
+        from .turns import ResumeTracker
+
+        self.resume = ResumeTracker(resume_window_s)
+        self.resumes = 0
+        self._snapshot: dict | None = None
+        self._merge_next = False
         self.state = state
         self.llm = llm
         self.elapsed = elapsed
@@ -280,6 +298,13 @@ class InterviewDirector(FrameProcessor):
             if hard:
                 await self._fixed_close(hard)
                 return
+            if self._merge_next:
+                from .turns import merge_resumed_turn
+
+                self._merge_next = False
+                merge_resumed_turn(frame.context)
+            self._snapshot = self.state.snapshot()
+            self.resume.on_reply_started()
             notes = self.state.notes_due(el)
             if notes:
                 append_notes(frame.context, notes)
@@ -294,11 +319,32 @@ class InterviewDirector(FrameProcessor):
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
             self._last_bot_stop = time.monotonic()
+            if not self.probe.in_response:
+                self.resume.on_reply_finished()
         elif isinstance(frame, UserStartedSpeakingFrame):
             self._user_speaking = True
+            gap = self.resume.on_user_started(self.elapsed())
+            await self.push_frame(frame, direction)
+            if gap is not None and not self.state.ending and self._snapshot is not None:
+                await self._on_resume(gap)
+            return
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user_speaking = False
+            self.resume.on_user_stopped(self.elapsed())
         await self.push_frame(frame, direction)
+
+    async def _on_resume(self, gap_ms: int) -> None:
+        """The candidate went on with the answer whose turn just ended: undo the cancelled reply (AT2)."""
+        from .transcript import TurnResumedFrame
+
+        self.state.restore(self._snapshot)
+        self._snapshot = None
+        self._merge_next = True
+        self.resumes += 1
+        log_event("turn_resumed", gap_ms=gap_ms)
+        await self.push_frame(TurnResumedFrame(gap_ms=gap_ms))
+        await self._label(self.state.current_question_id, self.state.current_kind)
+        self.on_progress(self.state.current_question_id, self.state.current_kind, self.state.question_number)
 
     async def _fixed_close(self, reason) -> None:
         from pipecat.frames.frames import TTSSpeakFrame

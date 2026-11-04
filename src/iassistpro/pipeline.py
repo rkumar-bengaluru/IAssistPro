@@ -73,10 +73,13 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
         log_event("turn_closed", speaker=turn.speaker, kind=turn.kind, chars=len(turn.text),
                   ms=turn.end_ms - turn.start_ms)
 
-    builder = TranscriptBuilder(on_turn=on_turn, vad_stop_s=s.vad_stop_s)
+    def on_retract(n: int) -> None:
+        store.drop_last_turns(sid, n)
+
+    builder = TranscriptBuilder(on_turn=on_turn, vad_stop_s=s.vad_stop_s, on_retract=on_retract)
     observer = TranscriptObserver(builder)
     director = InterviewDirector(state, llm, elapsed=observer.elapsed_s, on_progress=hooks.on_progress,
-                                 close_timeout_s=close_timeout_s)
+                                 close_timeout_s=close_timeout_s, resume_window_s=s.resume_window_s)
 
     def persist_usage(rows: list[Usage]) -> None:
         for r in rows:

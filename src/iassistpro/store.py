@@ -83,6 +83,14 @@ class SessionStore:
             f.flush()
             os.fsync(f.fileno())
 
+    def drop_last_turns(self, session_id: str, n: int) -> None:
+        """Remove the last n turns (a fragment and the reply it cancelled, merged back by a resume)."""
+        if n <= 0:
+            return
+        p = self.dir(session_id) / "turns.jsonl"
+        lines = p.read_text(encoding="utf-8").splitlines() if p.exists() else []
+        _atomic_write(p, "".join(line + "\n" for line in lines[: max(0, len(lines) - n)]))
+
     def write_usage(self, session_id: str, usage: list[Usage]) -> None:
         _atomic_write(self.dir(session_id) / "usage.json", json.dumps([u.model_dump() for u in usage]))
 

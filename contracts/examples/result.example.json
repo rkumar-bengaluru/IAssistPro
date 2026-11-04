@@ -21,5 +21,5 @@
   ],
   "llm_cost_usd": 0.00063,
   "audio": {"state": "ready", "format": "ogg_opus", "duration_ms": 270000, "bytes": 1080000},
-  "latency": {"n": 4, "median_reply_ms": 3750, "p90_reply_ms": 3900, "measured": "server"}
+  "latency": {"n": 4, "median_reply_ms": 3750, "p90_reply_ms": 3900, "measured": "server", "resumes": 0}
 }

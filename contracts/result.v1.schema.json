@@ -83,6 +83,11 @@
           ],
           "default": null,
           "title": "P90 Reply Ms"
+        },
+        "resumes": {
+          "default": 0,
+          "title": "Resumes",
+          "type": "integer"
         }
       },
       "title": "Latency",

@@ -44,7 +44,9 @@ class FakeInput(Passthrough):
         if isinstance(frame, StartFrame):
             self.start_event.set()
 
-    async def say(self, text: str) -> None:
+    async def say(self, text: str, *, interrupt: bool = False) -> None:
+        if interrupt:  # with external turn strategies the aggregator leaves interruptions to the turn source
+            await self.broadcast_interruption()
         await self.push_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
         await self.push_frame(UserStartedSpeakingFrame())
         await asyncio.sleep(0.05)
@@ -61,6 +63,7 @@ class FakeTTS(FrameProcessor):
         super().__init__()
         self.speak_s = speak_s
         self._tts_speaking = False
+        self._gen = 0  # bumped by an interruption: a reply's pending stop must not end the next reply
 
     async def _tts_on(self):
         if not self._tts_speaking:
@@ -70,8 +73,10 @@ class FakeTTS(FrameProcessor):
     async def _tts_off(self):
         if self._tts_speaking:
             self._tts_speaking = False
+            gen = self._gen
             await asyncio.sleep(self.speak_s)
-            await self.push_frame(TTSStoppedFrame())
+            if gen == self._gen:
+                await self.push_frame(TTSStoppedFrame())
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -91,6 +96,7 @@ class FakeTTS(FrameProcessor):
             return
         if isinstance(frame, InterruptionFrame):
             self._tts_speaking = False
+            self._gen += 1
         await self.push_frame(frame, direction)
 
 
@@ -174,9 +180,14 @@ def external_strategies():
     return UserTurnStrategies(start=[ExternalUserTurnStartStrategy()], stop=[ExternalUserTurnStopStrategy()])
 
 
-async def run_scripted(brief: Brief, store: SessionStore, answers: list[str], *, tool_first_no_text=False,
-                       end_after: int | None = None, disconnect_after: int | None = None, timeout=20.0):
-    """Answer each interviewer reply in turn; optionally press End or disconnect after N answers."""
+async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool_first_no_text=False,
+                       end_after: int | None = None, disconnect_after: int | None = None, timeout=20.0,
+                       tts_speak_s: float = 0.05):
+    """Answer each interviewer reply in turn; optionally press End or disconnect after N answers.
+
+    An answer given as a tuple of fragments ends its turn after each fragment; the next fragment starts as soon as
+    the interviewer starts replying (a candidate resuming after a pause the turn detection took for the end).
+    """
     from datetime import datetime, timezone
 
     hooks = FakeHooks(brief, store)
@@ -186,7 +197,7 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list[str], *,
     transport = FakeTransport()
     llm = FakeInterviewerLLM(brief, tool_first_no_text=tool_first_no_text)
     s = Settings(llm_provider="fake")
-    task = asyncio.create_task(run_interview(hooks, transport, s, stt=Passthrough(), tts=FakeTTS(), llm=llm,
+    task = asyncio.create_task(run_interview(hooks, transport, s, stt=Passthrough(), tts=FakeTTS(tts_speak_s), llm=llm,
                                              turn_strategies=external_strategies(), vad=None, close_timeout_s=3.0))
     out = transport.output()
 
@@ -199,7 +210,19 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list[str], *,
             await asyncio.sleep(0.1)
             if task.done():
                 return
-            await transport.input().say(a)
+            if isinstance(a, tuple):
+                for frag in a[:-1]:
+                    await transport.input().say(frag)
+                    for _ in range(300):
+                        if out.bot_speaking:
+                            break
+                        await asyncio.sleep(0.01)
+                    await asyncio.sleep(0.05)
+                await transport.input().say(a[-1], interrupt=True)
+                await asyncio.sleep(0.05)
+                out.stop_event.clear()   # the interrupted reply's stop; wait for the merged turn's reply
+            else:
+                await transport.input().say(a)
             if end_after is not None and i + 1 == end_after:
                 await asyncio.sleep(0.01)
                 hooks.end_requested.set()

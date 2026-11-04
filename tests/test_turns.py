@@ -144,3 +144,70 @@ def test_settings_read_grace_and_window(monkeypatch):
     monkeypatch.setenv("TURN_GRACE_S", "2.0")
     monkeypatch.setenv("RESUME_WINDOW_S", "0")
     assert (Settings().turn_grace_s, Settings().resume_window_s) == (2.0, 0.0)
+
+
+# ---- resume merge (AT2)
+
+def _context(notes: bool = False):
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    a = [{"type": "text", "text": "A"}, {"type": "text", "text": "[Interviewer note, not said by the candidate] x"}] \
+        if notes else "A"
+    return LLMContext(messages=[
+        {"role": "user", "content": "(The candidate has joined the call.)"},
+        {"role": "assistant", "content": "Hello Sam. Tell me about yourself."},
+        {"role": "user", "content": a},
+        {"role": "assistant", "content": "Thanks, and",
+         "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "ask_question", "arguments": "{}"}}]},
+        {"role": "tool", "tool_call_id": "c1", "content": "{\"ok\": true}"},
+        {"role": "user", "content": "B"},
+    ])
+
+
+def test_resume_within_window_merges_context():
+    from iassistpro.turns import ResumeTracker, merge_resumed_turn
+
+    r = ResumeTracker(window_s=2.0)
+    r.on_user_stopped(10.0)
+    r.on_reply_started()
+    assert r.on_user_started(11.5) == 1500
+    ctx = _context()
+    assert merge_resumed_turn(ctx) is True
+    msgs = ctx.get_messages()
+    assert len(msgs) == 3 and msgs[-1] == {"role": "user", "content": "A B"}
+    ctx = _context(notes=True)
+    merge_resumed_turn(ctx)
+    last = ctx.get_messages()[-1]
+    assert last["content"][0] == {"type": "text", "text": "A B"} and last["content"][1]["text"].startswith("[Interviewer")
+
+
+def test_resume_after_window_is_a_real_barge_in():
+    from iassistpro.turns import ResumeTracker
+
+    r = ResumeTracker(window_s=2.0)
+    r.on_user_stopped(10.0)
+    r.on_reply_started()
+    assert r.on_user_started(12.5) is None            # too late: today's barge-in, context untouched
+    r.on_user_stopped(20.0)
+    r.on_reply_started()
+    r.on_reply_finished()
+    assert r.on_user_started(20.5) is None            # the reply was already heard in full: a new answer
+    r.on_user_stopped(30.0)
+    assert r.on_user_started(30.5) is None            # no reply had started: nothing to cancel
+
+
+def test_director_does_not_advance_on_a_cancelled_reply(example_brief):
+    from iassistpro.contract import Limits, Prices
+    from iassistpro.director import InterviewState
+    from iassistpro.limits import CostMeter, LimitTracker
+
+    brief = example_brief.model_copy(update={"limits": Limits(max_follow_ups=1, max_minutes=25)})
+    st = InterviewState(brief, CostMeter(Prices(input=0.1, cached_input=0.01, cache_write=0.125, output=0.5), 1.0),
+                        LimitTracker(brief.limits, [q.id for q in brief.planned_questions]))
+    st.on_tool("ask_question", {"question_id": "q1"}, True)
+    snap = st.snapshot()
+    st.on_tool("follow_up", {"question_id": "q1"}, True)
+    st.on_tool("ask_question", {"question_id": "q2"}, True)
+    st.restore(snap)
+    assert (st.current_question_id, st.current_kind, st.question_number) == ("q1", "main", 1)
+    assert st.tracker.follow_ups("q1") == 0 and st.tracker.main_asked == 1

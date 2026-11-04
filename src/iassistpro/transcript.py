@@ -31,6 +31,13 @@ class TurnLabelFrame(DataFrame):
 
 
 @dataclass
+class TurnResumedFrame(DataFrame):
+    """The director's decision that the candidate resumed the answer whose turn just ended (AT2)."""
+
+    gap_ms: int = 0
+
+
+@dataclass
 class _BotTurn:
     texts: list[str] = field(default_factory=list)
     start_ms: int | None = None
@@ -49,8 +56,14 @@ def p90(xs: list[int]) -> int:
 
 
 class TranscriptBuilder:
-    def __init__(self, on_turn: Callable[[Turn], None], vad_stop_s: float = 0.2):
+    def __init__(self, on_turn: Callable[[Turn], None], vad_stop_s: float = 0.2,
+                 on_retract: Callable[[int], None] | None = None):
         self.on_turn = on_turn
+        self.on_retract = on_retract or (lambda n: None)
+        self.resumes = 0
+        self._last_cand_idx: int | None = None
+        self._gap_from_last_cand = False
+        self._resume_into: Turn | None = None
         self.vad_stop_s = vad_stop_s
         self.turns: list[Turn] = []
         self.reply_gaps_ms: list[int] = []
@@ -73,6 +86,8 @@ class TranscriptBuilder:
     def on_frame(self, frame, t_ms: int) -> None:
         if isinstance(frame, TurnLabelFrame):
             self.set_label(frame.question_id, frame.kind)
+        elif isinstance(frame, TurnResumedFrame):
+            self._resume()
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._start_reply(ended=False)
         elif isinstance(frame, TTSSpeakFrame):
@@ -95,6 +110,7 @@ class TranscriptBuilder:
                 gap = t_ms - self._last_cand_end
                 if 0 <= gap < MAX_GAP_MS:
                     self.reply_gaps_ms.append(gap)
+                    self._gap_from_last_cand = True
                 self._last_cand_end = None
             if self._bot is not None and self._bot.start_ms is None:
                 self._bot.start_ms = t_ms
@@ -125,6 +141,8 @@ class TranscriptBuilder:
                 self._cand_label = self._label
                 self._cand_texts = []
                 self._last_vad_end = None
+                if self._resume_into is not None:
+                    self._reopen(self._resume_into)
             self._pending_vad_start = None
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             stop = frame.stop_secs or self.vad_stop_s
@@ -188,7 +206,36 @@ class TranscriptBuilder:
             return
         qid, kind = self._cand_label
         self._last_cand_end = end
+        self._gap_from_last_cand = False
         self._emit(Turn(speaker="candidate", text=text, start_ms=start, end_ms=end, question_id=qid, kind=kind))
+        self._last_cand_idx = len(self.turns) - 1
+
+    # ---- resume merge (AT2)
+    def _resume(self) -> None:
+        """Take back the ended fragment and the cancelled reply; the open candidate turn continues the fragment."""
+        self.resumes += 1
+        i = self._last_cand_idx
+        if i is None or i >= len(self.turns) or self.turns[i].speaker != "candidate":
+            return
+        removed = self.turns[i:]
+        self.turns = self.turns[:i]
+        self._last_cand_idx = None
+        self._bot = None  # the cancelled reply, if it hasn't closed yet, never becomes a turn
+        if self._gap_from_last_cand and self.reply_gaps_ms:
+            self.reply_gaps_ms.pop()
+        self._gap_from_last_cand = False
+        self._last_cand_end = None
+        self.on_retract(len(removed))
+        if self._cand_open:
+            self._reopen(removed[0])
+        else:
+            self._resume_into = removed[0]
+
+    def _reopen(self, fragment: Turn) -> None:
+        self._resume_into = None
+        self._cand_start = fragment.start_ms
+        self._cand_texts = [fragment.text] + self._cand_texts
+        self._cand_label = (fragment.question_id, fragment.kind)
 
     def _emit(self, turn: Turn) -> None:
         self.turns.append(turn)
@@ -197,12 +244,13 @@ class TranscriptBuilder:
     def latency(self) -> Latency:
         g = self.reply_gaps_ms
         if not g:
-            return Latency(n=0)
-        return Latency(n=len(g), median_reply_ms=int(round(statistics.median(g))), p90_reply_ms=p90(g))
+            return Latency(n=0, resumes=self.resumes)
+        return Latency(n=len(g), median_reply_ms=int(round(statistics.median(g))), p90_reply_ms=p90(g),
+                       resumes=self.resumes)
 
 
 _WATCHED = (
-    TurnLabelFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TTSSpeakFrame, TTSTextFrame,
+    TurnLabelFrame, TurnResumedFrame, LLMFullResponseStartFrame, LLMFullResponseEndFrame, TTSSpeakFrame, TTSTextFrame,
     BotStartedSpeakingFrame, BotStoppedSpeakingFrame, InterruptionFrame, VADUserStartedSpeakingFrame,
     UserStartedSpeakingFrame, VADUserStoppedSpeakingFrame, TranscriptionFrame, UserStoppedSpeakingFrame,
 )

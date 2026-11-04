@@ -149,3 +149,33 @@ def test_flush_closes_open_turns_at_session_end():
     b.on_frame(VADUserStartedSpeakingFrame(start_secs=0.2), 3000)
     b.flush(4000)
     assert [(t.speaker, t.end_ms) for t in b.turns] == [("interviewer", 4000)]
+
+
+def test_merged_turn_is_one_transcript_turn():
+    from iassistpro.transcript import TurnResumedFrame
+
+    retracted = []
+    b = TranscriptBuilder(on_turn=lambda t: None, on_retract=retracted.append)
+    bot_reply(b, 1000, ["Hello Sam.", "Tell me about yourself."], label=("q1", "main"))
+    answer(b, 6000, 8000, ["I led the team."])                 # fragment: 5800..7800, turn ends at 8300
+    b.on_frame(LLMFullResponseStartFrame(), 8400)              # the reply that gets cancelled
+    b.on_frame(tts("Thanks, and"), 8410)
+    b.on_frame(TurnLabelFrame("q2", "main"), 8420)
+    b.on_frame(BotStartedSpeakingFrame(), 8500)
+    b.on_frame(VADUserStartedSpeakingFrame(start_secs=0.2), 8900)
+    b.on_frame(InterruptionFrame(), 8905)
+    b.on_frame(UserStartedSpeakingFrame(), 8910)
+    b.on_frame(BotStoppedSpeakingFrame(), 8920)
+    b.on_frame(TurnResumedFrame(gap_ms=600), 8930)
+    b.on_frame(TurnLabelFrame("q1", "main"), 8940)
+    b.on_frame(tr("We shipped."), 11_050)
+    b.on_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2), 11_000)
+    b.on_frame(UserStoppedSpeakingFrame(), 11_300)
+    bot_reply(b, 12_000, ["Thanks. Next?"], label=("q2", "main"))
+    b.flush(20_000)
+    cand = [(t.text, t.start_ms, t.end_ms, t.question_id, t.kind) for t in b.turns if t.speaker == "candidate"]
+    assert cand == [("I led the team. We shipped.", 5800, 10_800, "q1", "main")]
+    assert [t.text for t in b.turns if t.speaker == "interviewer"] == ["Hello Sam. Tell me about yourself.",
+                                                                        "Thanks. Next?"]
+    assert retracted == [2]                                     # the fragment and the cancelled reply
+    assert b.reply_gaps_ms == [12_100 - 10_800] and b.latency().resumes == 1

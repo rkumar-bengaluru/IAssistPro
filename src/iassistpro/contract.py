@@ -145,6 +145,7 @@ class Latency(_Model):
     median_reply_ms: int | None = None
     p90_reply_ms: int | None = None
     measured: Literal["server"] = "server"
+    resumes: int = 0  # answers resumed right after a turn end and merged back (AT2); added field, optional
 
 
 class Result(_Model):

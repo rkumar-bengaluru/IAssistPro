@@ -98,3 +98,26 @@ async def test_full_session_logs_no_content(tmp_store, captured_logs, example_br
     await run_scripted(brief, tmp_store, answers=[f"my answer {CANARY}"] * 4)
     out = captured_logs()
     assert CANARY not in out and "turn_closed" in out and "session_end" in out
+
+
+async def test_scripted_session_with_a_mid_answer_pause_runs_the_llm_once_per_answer(tmp_store, brief_3q):
+    # The second answer ends early at a sentence pause; the candidate resumes while the reply has just started.
+    hooks = await run_scripted(brief_3q, tmp_store, answers=["a1", ("a2 first.", "a2 rest."), "a2 more", "a3"],
+                               tts_speak_s=0.6)
+    r = tmp_store.result(hooks.session_id)
+    assert labels(tmp_store, hooks) == [
+        ("interviewer", "main", "q1"), ("candidate", "main", "q1"), ("interviewer", "main", "q2"),
+        ("candidate", "main", "q2"), ("interviewer", "follow_up", "q2"), ("candidate", "follow_up", "q2"),
+        ("interviewer", "main", "q3"), ("candidate", "main", "q3"), ("interviewer", "closing", None)]
+    assert [t.text for t in r.turns if t.speaker == "candidate"] == ["a1", "a2 first. a2 rest.", "a2 more", "a3"]
+    # answers + greeting, plus the one run the early turn end had already started before the resume
+    assert hooks.llm.runs == 4 + 1 + 1 and hooks.end_reason == "completed"
+
+
+async def test_resumes_are_counted_without_content(tmp_store, brief_3q, captured_logs):
+    hooks = await run_scripted(brief_3q, tmp_store, answers=["a1", ("a2 first.", "a2 rest."), "a2 more", "a3"],
+                               tts_speak_s=0.6)
+    r = tmp_store.result(hooks.session_id)
+    assert r.latency.resumes == 1
+    logs = captured_logs()
+    assert "turn_resumed gap_ms=" in logs and "a2 first" not in logs and "a2 rest" not in logs

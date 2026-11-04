@@ -41,6 +41,7 @@ class FakeInterviewerLLM(LLMService):
         self._followed_up: set[str] = set()
         self._pending_text: str | None = None
         self._closed = False
+        self._last_step: tuple[int, list[str], set[str]] | None = None
 
     def can_generate_metrics(self) -> bool:
         return True
@@ -99,6 +100,11 @@ class FakeInterviewerLLM(LLMService):
             text, tool, args = self._pending_text, None, {}  # the re-run after a tool call that spoke nothing
             self._pending_text = None
         else:
+            k = self._candidate_turns_and_notes(context)[0]
+            if self._last_step is not None and self._last_step[0] == k:
+                # The same answer again (a resumed answer merged back): undo the cancelled step, then redo it.
+                self._asked, self._followed_up = list(self._last_step[1]), set(self._last_step[2])
+            self._last_step = (k, list(self._asked), set(self._followed_up))
             text, tool, args = self._script_step(context)
             if tool == "ask_question":
                 self._asked.append(args["question_id"])
