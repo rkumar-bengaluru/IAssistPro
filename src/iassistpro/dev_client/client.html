@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Interviewer dev client</title>
+<style>
+  :root { --bg: #f7f7f5; --fg: #1d1d1b; --muted: #6b6b66; --rec: #d33a2c; --card: #ffffff; --line: #e2e2dc; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --fg: #ececea; --muted: #a0a09a; --rec: #ff5b4d; --card: #22221f; --line: #34342f; }
+  }
+  body { margin: 0; padding: 24px 16px; background: var(--bg); color: var(--fg);
+         font: 16px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 640px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px 20px; }
+  .rec { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; color: var(--rec); }
+  .dot { width: 12px; height: 12px; border-radius: 50%; background: var(--rec); animation: pulse 1.4s infinite; }
+  .off .dot { animation: none; opacity: .3; } .off { color: var(--muted); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  #status { color: var(--muted); margin: 8px 0 0; }
+  button { margin-top: 12px; font: inherit; padding: 6px 14px; border-radius: 8px; border: 1px solid var(--line);
+           background: var(--bg); color: var(--fg); cursor: pointer; }
+  p.hint { color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Mock interview (dev client)</h1>
+  <div class="card">
+    <span id="rec" class="rec off"><span class="dot"></span><span id="rectext">Not recording</span></span>
+    <p id="status">idle</p>
+    <button id="leave" type="button">Leave</button>
+  </div>
+  <p class="hint">Use headphones, so the interviewer doesn't hear itself. Captions are counted, not shown.</p>
+  <audio id="bot" autoplay></audio>
+</main>
+<script type="module">
+// Standalone dev client for the IAssistPro interviewer: Pipecat JS client + SmallWebRTC.
+// Query: ?session=<id>&token=<one-time token>&dur=<seconds before leaving, optional>
+import { PipecatClient } from "https://esm.sh/@pipecat-ai/client-js@1.16.0";
+import { SmallWebRTCTransport } from "https://esm.sh/@pipecat-ai/small-webrtc-transport@1.11.2?deps=@pipecat-ai/client-js@1.16.0";
+
+const q = new URLSearchParams(location.search);
+const session = q.get("session") || "";
+const token = q.get("token") || "";
+const dur = Number(q.get("dur") || 0);
+const T0 = performance.now();
+const now = () => Math.round(performance.now() - T0);
+const state = { events: [], gaps: [], firstBotAudioMs: null, captions: { user: 0, bot: 0 }, done: false, log: [] };
+window.iassist = state;
+const status = (s) => { document.getElementById("status").textContent = s; state.log.push({ t: now(), s }); console.log("[iassist]", now(), s); };
+const recording = (on) => {
+  document.getElementById("rec").classList.toggle("off", !on);
+  document.getElementById("rectext").textContent = on ? "Recording" : "Not recording";
+};
+
+// Energy activity on the mic and on the interviewer's audio, sampled every 10 ms (the spike's gap meter).
+const ctx = new AudioContext();
+function meter(stream, who) {
+  const src = ctx.createMediaStreamSource(stream);
+  const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  let active = false, lastLoud = 0;
+  setInterval(() => {
+    an.getFloatTimeDomainData(buf);
+    let e = 0; for (const x of buf) e += x * x;
+    const rms = Math.sqrt(e / buf.length), t = now();
+    if (rms > 0.01) {
+      lastLoud = t;
+      if (!active) {
+        active = true; state.events.push({ who, ev: "start", t });
+        if (who === "bot" && state.firstBotAudioMs === null) state.firstBotAudioMs = t;
+      }
+    } else if (active && t - lastLoud > 400) { active = false; state.events.push({ who, ev: "end", t: lastLoud }); }
+  }, 10);
+}
+
+function pairGaps() {
+  // For each interviewer audio start, the latest mic speech end before it (and after the previous start).
+  const ev = state.events, gaps = [];
+  let prev = -1;
+  for (const b of ev.filter((x) => x.who === "bot" && x.ev === "start")) {
+    const ends = ev.filter((x) => x.who === "mic" && x.ev === "end" && x.t < b.t && x.t > prev);
+    prev = b.t;
+    if (ends.length) { const e = ends[ends.length - 1]; if (b.t - e.t < 12000) gaps.push(b.t - e.t); }
+  }
+  return gaps;
+}
+
+let finished = false;
+async function finish(why) {
+  if (finished) return;
+  finished = true;
+  recording(false);
+  try { await client.disconnect(); } catch (e) {}
+  state.gaps = pairGaps();
+  status("done:" + why);
+  state.done = true;
+}
+
+const offerPath = `/sessions/${encodeURIComponent(session)}/offer?token=${encodeURIComponent(token)}`;
+const client = new PipecatClient({
+  transport: new SmallWebRTCTransport({ waitForICEGathering: true }),
+  enableMic: true, enableCam: false,
+  callbacks: {
+    onConnected: () => { status("connected"); recording(true); },
+    onBotReady: () => status("bot-ready"),
+    onDisconnected: () => { status("disconnected"); finish("server"); },
+    onTransportStateChanged: (s) => status("transport:" + s),
+    onError: () => status("error"),
+    onUserTranscript: (d) => { if (d && d.final) state.captions.user += 1; },
+    onBotTranscript: () => { state.captions.bot += 1; },
+    onTrackStarted: (track, p) => {
+      if (track.kind !== "audio") return;
+      const ms = new MediaStream([track]);
+      if (!p?.local) document.getElementById("bot").srcObject = ms;
+      meter(ms, p?.local ? "mic" : "bot");
+    },
+  },
+});
+document.getElementById("leave").onclick = () => finish("leave");
+
+try {
+  await ctx.resume();
+  status("connecting");
+  // The token goes in X-Session-Token; ?token= is kept on the endpoint in case the transport drops headers.
+  await client.connect({ webrtcRequestParams: { endpoint: offerPath, headers: new Headers({ "X-Session-Token": token }) } });
+  status("connect-resolved");
+} catch (e) { status("connect-failed"); finish("connect-failed"); }
+
+if (dur > 0) setTimeout(() => finish("dur"), dur * 1000);
+</script>
+</body>
+</html>

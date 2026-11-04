@@ -40,3 +40,8 @@ def test_setup_logging_is_idempotent(captured_logs):
     setup_logging("INFO")
     log_event("once", n=1)
     assert captured_logs().count("once n=1") == 1
+
+
+def test_route_templates_are_logged_as_is(captured_logs):
+    log_event("http", route="/sessions/{session_id}/offer", status=200)
+    assert "route=/sessions/{session_id}/offer" in captured_logs()

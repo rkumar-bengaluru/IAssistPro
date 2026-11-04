@@ -1,6 +1,27 @@
 name: iassistpro
 
 services:
+  # Standalone interviewer (dev client on). JobLens runs its own copy per stack (A2) with its own ports.
+  interviewer:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: runtime
+    ports:
+      - "127.0.0.1:8770:8000"
+      - "127.0.0.1:40020-40022:40020-40022/udp"   # published 1:1: the advertised candidate is ICE_HOST:<port>
+    environment:
+      ICE_PORTS: "40020-40022"
+      ICE_HOST: "127.0.0.1"
+      DEV_CLIENT: "${DEV_CLIENT:-1}"
+      LLM_PROVIDER: "${LLM_PROVIDER:-anthropic}"
+      TTS_PROVIDER: "${TTS_PROVIDER:-piper}"
+      ANTHROPIC_API_KEY:   # passed by name from the caller's environment; never written here
+    volumes:
+      - interviewer_models:/models
+      - interviewer_sessions:/data/sessions
+    restart: "no"
+
   tests:
     profiles: ["test"]
     build:

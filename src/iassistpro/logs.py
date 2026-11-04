@@ -11,7 +11,7 @@ import sys
 
 from loguru import logger
 
-_SAFE_STR = re.compile(r"^[A-Za-z0-9_.:/-]{0,64}$")
+_SAFE_STR = re.compile(r"^[A-Za-z0-9_.:/{}-]{0,64}$")
 _LEVEL_NO = logging.getLevelNamesMapping()
 _state: dict = {"level": 20, "sink": None, "default_removed": False}
 
