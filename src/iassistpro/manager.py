@@ -193,6 +193,7 @@ class SessionManager:
         self._active: LiveSession | None = None
         self._sessions: dict[str, LiveSession] = {}
         self._last_sweep = clock()
+        self.audio_recovery: asyncio.Task | None = None
 
     @property
     def live_session_id(self) -> str | None:
@@ -208,6 +209,8 @@ class SessionManager:
     async def startup(self) -> None:
         self.store.recover_on_startup(_now())
         self.store.sweep(_now())
+        # A restart during encoding left a finished session's audio pending: settle it in the background (AF4).
+        self.audio_recovery = asyncio.create_task(asyncio.to_thread(self.store.recover_pending_audio))
 
     def _release(self, live: LiveSession) -> None:
         if self._active is live:

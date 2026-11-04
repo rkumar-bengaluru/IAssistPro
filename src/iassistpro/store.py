@@ -1,7 +1,8 @@
 """Per-session temp folder: written turn by turn so a crash still reports spend (AD4); expires after ttl_h.
 
 Layout {root}/{session_id}/: meta.json (prices, limits, model, counts; never brief text), state.json,
-turns.jsonl (one Turn per line), usage.json (replaced atomically), audio.raw (transient), audio.ogg.
+turns.jsonl (one Turn per line), usage.json (replaced atomically), audio.raw (transient), audio.ogg,
+audio.reencode (transient: marks a startup re-encode in progress, so a crash during it isn't retried).
 """
 
 import json
@@ -169,3 +170,33 @@ class SessionStore:
         if recovered:
             log_event("recovered_on_startup", sessions=len(recovered))
         return recovered
+
+    def recover_pending_audio(self) -> list[str]:
+        """Finished sessions whose encoding was cut off by a restart (audio pending): re-encode once from
+        audio.raw, else report the recording failed and delete the raw (AF4). Blocking: run it off the loop."""
+        from . import recorder
+
+        done = []
+        for sid in self._ids():
+            try:
+                st = self.read_state(sid)
+            except (OSError, ValidationError, ValueError):
+                continue
+            if st.state not in ("ended", "failed") or st.audio.state != "pending":
+                continue
+            d = self.dir(sid)
+            raw, marker = d / "audio.raw", d / "audio.reencode"
+            audio = AudioInfo(state="failed")
+            if raw.exists() and not marker.exists():
+                marker.write_text("")
+                try:
+                    audio = recorder._encode_sync(raw, d / "audio.ogg", False)
+                except Exception as e:
+                    log_event("audio_reencode_failed", session=sid, error=type(e).__name__)
+            if not self.keep_raw:
+                raw.unlink(missing_ok=True)
+            self.write_state(sid, st.model_copy(update=dict(audio=audio)))
+            marker.unlink(missing_ok=True)
+            log_event("audio_recovered", session=sid, state=audio.state)
+            done.append(sid)
+        return done

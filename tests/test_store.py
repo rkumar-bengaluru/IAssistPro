@@ -83,6 +83,67 @@ def test_ended_sessions_are_not_touched_by_recovery(tmp_path):
     assert st.read_state("s1") == rec
 
 
+# ---- AF4: a crash during encoding must not leave the audio pending until the TTL
+
+def ended_pending(st, sid="s1"):
+    st.create(sid, meta())
+    st.write_state(sid, StateRecord(state="ended", end_reason="completed", started_at=NOW, ended_at=NOW,
+                                    audio=AudioInfo(state="pending")))
+
+
+def stereo_raw(seconds=0.5) -> bytes:
+    import numpy as np
+
+    n = int(16000 * seconds)
+    tone = (8000 * np.sin(np.arange(n) * 2 * np.pi * 440 / 16000)).astype(np.int16)
+    return np.stack([tone, tone], axis=1).tobytes()
+
+
+def test_recover_reencodes_pending_audio(tmp_path):
+    st = SessionStore(tmp_path, 24)
+    ended_pending(st)
+    (st.dir("s1") / "audio.raw").write_bytes(stereo_raw())
+    st2 = SessionStore(tmp_path, 24)
+    assert st2.recover_on_startup(NOW) == []
+    assert st2.recover_pending_audio() == ["s1"]
+    a = st2.read_state("s1").audio
+    assert (a.state, a.format) == ("ready", "ogg_opus") and a.duration_ms == 500 and a.bytes > 0
+    assert (st.dir("s1") / "audio.ogg").exists() and not (st.dir("s1") / "audio.raw").exists()
+    assert st2.read_state("s1").state == "ended"
+
+
+def test_recover_marks_audio_failed_without_raw(tmp_path):
+    st = SessionStore(tmp_path, 24)
+    ended_pending(st)
+    assert st.recover_pending_audio() == ["s1"]
+    assert st.read_state("s1").audio.state == "failed"
+
+
+def test_recover_encodes_only_once(tmp_path):
+    # A crash during the recovery's own encode leaves its marker: the next start gives up and deletes the raw.
+    st = SessionStore(tmp_path, 24)
+    ended_pending(st)
+    (st.dir("s1") / "audio.raw").write_bytes(stereo_raw())
+    (st.dir("s1") / "audio.reencode").write_text("")
+    assert st.recover_pending_audio() == ["s1"]
+    assert st.read_state("s1").audio.state == "failed"
+    assert not (st.dir("s1") / "audio.raw").exists() and not (st.dir("s1") / "audio.reencode").exists()
+
+
+def test_recover_marks_audio_failed_when_encoding_fails(tmp_path, monkeypatch):
+    from iassistpro import recorder
+
+    def boom(*a, **k):
+        raise RuntimeError("bad raw")
+
+    monkeypatch.setattr(recorder, "_encode_sync", boom)
+    st = SessionStore(tmp_path, 24)
+    ended_pending(st)
+    (st.dir("s1") / "audio.raw").write_bytes(stereo_raw())
+    assert st.recover_pending_audio() == ["s1"]
+    assert st.read_state("s1").audio.state == "failed" and not (st.dir("s1") / "audio.raw").exists()
+
+
 def test_sweep_deletes_after_ttl_only(tmp_path):
     st = SessionStore(tmp_path, 24)
     for sid, age in [("keep", timedelta(hours=23, minutes=59)), ("old", timedelta(hours=24, minutes=1))]:

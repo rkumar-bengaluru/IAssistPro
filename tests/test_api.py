@@ -321,3 +321,20 @@ async def test_restart_recovery_and_lock_free(tmp_path):
     await mgr2.startup()
     st = mgr2.status(c["session_id"])
     assert (st["state"], st["error"]) == ("failed", "service_restarted") and mgr2.live_session_id is None
+
+
+async def test_startup_reencodes_pending_audio_in_the_background(tmp_path):
+    client, mgr, *_ = make(tmp_path)
+    async with client:
+        c = await create(client)
+    from iassistpro.manager import SessionManager
+
+    sid, store = c["session_id"], mgr.store
+    rec = store.read_state(sid)
+    store.write_state(sid, rec.model_copy(update={"state": "ended", "end_reason": "completed",
+                                                   "audio": AudioInfo(state="pending")}))
+    s = mgr.s
+    mgr2 = SessionManager(s, SessionStore(Path(s.sessions_dir), 24), mgr.model_status, runner=FakeRunner())
+    await mgr2.startup()
+    await mgr2.audio_recovery   # no raw on disk: the recording is reported failed, never left pending
+    assert mgr2.status(sid)["audio_state"] == "failed"
