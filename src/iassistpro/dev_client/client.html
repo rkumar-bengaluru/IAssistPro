@@ -46,7 +46,8 @@ const token = q.get("token") || "";
 const dur = Number(q.get("dur") || 0);
 const T0 = performance.now();
 const now = () => Math.round(performance.now() - T0);
-const state = { events: [], gaps: [], firstBotAudioMs: null, captions: { user: 0, bot: 0 }, done: false, log: [] };
+const state = { events: [], gaps: [], firstBotAudioMs: null, captions: { user: 0, bot: 0 }, done: false, log: [],
+                talkOverMs: 0 };
 window.iassist = state;
 const status = (s) => { document.getElementById("status").textContent = s; state.log.push({ t: now(), s }); console.log("[iassist]", now(), s); };
 const recording = (on) => {
@@ -56,6 +57,11 @@ const recording = (on) => {
 
 // Energy activity on the mic and on the interviewer's audio, sampled every 10 ms (the spike's gap meter).
 const ctx = new AudioContext();
+// Talk-over: the interviewer audible while the mic is speaking, outside the first 300 ms of a mic speech start.
+const live = { mic: false, bot: false, micStart: 0 };
+setInterval(() => {
+  if (live.mic && live.bot && now() - live.micStart > 300) state.talkOverMs += 10;
+}, 10);
 function meter(stream, who) {
   const src = ctx.createMediaStreamSource(stream);
   const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
@@ -69,9 +75,12 @@ function meter(stream, who) {
       lastLoud = t;
       if (!active) {
         active = true; state.events.push({ who, ev: "start", t });
+        live[who] = true; if (who === "mic") live.micStart = t;
         if (who === "bot" && state.firstBotAudioMs === null) state.firstBotAudioMs = t;
       }
-    } else if (active && t - lastLoud > 400) { active = false; state.events.push({ who, ev: "end", t: lastLoud }); }
+    } else if (active && t - lastLoud > 400) {
+      active = false; live[who] = false; state.events.push({ who, ev: "end", t: lastLoud });
+    }
   }, 10);
 }
 

@@ -1,5 +1,6 @@
 // Spoken e2e harness: one real session through the running service, with the browser's fake microphone
 // playing a generated session WAV (scripts/make_session_wav.py → e2e/out/).
+import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { chromium } from "@playwright/test";
@@ -29,10 +30,21 @@ export async function health(): Promise<any> {
 
 export type SessionRun = {
   result: any; gaps: number[]; firstBotAudioMs: number | null; captions: { user: number; bot: number }; createMs: number;
+  talkOverMs: number; llmRuns: number | null;
 };
+
+// The service's own content-free "session_end ... llm_runs=N" log line for the session that just ended.
+export function llmRunsFromLogs(sinceIso: string): number | null {
+  // The service logs to stderr; read both streams.
+  const r = spawnSync("docker", ["logs", "--since", sinceIso, process.env.E2E_CONTAINER ?? "iassistpro-interviewer-1"],
+                      { encoding: "utf8" });
+  const m = [...`${r.stdout ?? ""}${r.stderr ?? ""}`.matchAll(/session_end reason=\S+ turns=\d+ llm_runs=(\d+)/g)];
+  return m.length ? Number(m[m.length - 1][1]) : null;
+}
 
 export async function runSession(opts: { brief: any; wav: string; durS: number; channel: string; endAfterS?: number }): Promise<SessionRun> {
   const t0 = Date.now();
+  const sinceIso = new Date(t0 - 2000).toISOString();
   const created = await fetch(`${BASE}/sessions`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(opts.brief),
   });
@@ -58,7 +70,7 @@ export async function runSession(opts: { brief: any; wav: string; durS: number; 
     await page.waitForFunction(() => (window as any).iassist?.done, null, { timeout: (opts.durS + 90) * 1000, polling: 500 });
     const browserSide = await page.evaluate(() => {
       const s = (window as any).iassist;
-      return { gaps: s.gaps, firstBotAudioMs: s.firstBotAudioMs, captions: s.captions };
+      return { gaps: s.gaps, firstBotAudioMs: s.firstBotAudioMs, captions: s.captions, talkOverMs: s.talkOverMs };
     });
     // The page left (dur) or the server ended the call; make sure the session finishes either way.
     let status: any;
@@ -74,7 +86,7 @@ export async function runSession(opts: { brief: any; wav: string; durS: number; 
       await sleep(1000);
     }
     const result = await (await fetch(`${BASE}/sessions/${id}/result`)).json();
-    return { result, createMs, ...browserSide };
+    return { result, createMs, ...browserSide, llmRuns: llmRunsFromLogs(sinceIso) };
   } finally {
     if (ender) clearTimeout(ender);
     await browser.close();
@@ -122,6 +134,14 @@ export function wer(ref: string, hyp: string): number {
     }
   }
   return d[h.length] / Math.max(1, r.length);
+}
+
+// Split answers: each scripted answer must be exactly one candidate turn, in order, and match its clip's words.
+export function splitCount(result: any, clips: { text: string }[]): number {
+  const cand = result.turns.filter((t: any) => t.speaker === "candidate");
+  let bad = Math.abs(cand.length - clips.length);
+  for (let i = 0; i < Math.min(cand.length, clips.length); i++) if (wer(clips[i].text, cand[i].text) > 0.3) bad++;
+  return bad;
 }
 
 export function candidateText(result: any): string {
