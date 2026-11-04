@@ -1,0 +1,50 @@
+[
+ {
+  "id": "a00",
+  "text": "Hi, I'm Sam. I've spent six years building backend services, mostly in Python and Go, for a logistics company."
+ },
+ {
+  "id": "a01",
+  "text": "The project I'm proudest of is a routing service that cut delivery planning time from two hours to about ten minutes."
+ },
+ {
+  "id": "a02",
+  "text": "I led a team of four engineers. My part was the data model and the queue design; the others owned the user interface and testing."
+ },
+ {
+  "id": "a03",
+  "text": "We measured it by comparing planning logs for three months before and after the release."
+ },
+ {
+  "id": "a04",
+  "text": "When two senior people disagreed on the database choice, I set up a small benchmark so we could decide on evidence instead of opinion."
+ },
+ {
+  "id": "a05",
+  "text": "I'd say my weakest area is frontend work. I can read React code, but I haven't shipped a large feature on my own."
+ },
+ {
+  "id": "a06",
+  "text": "I want this role because the team works on real time systems at scale, and that's exactly where I want to grow next."
+ },
+ {
+  "id": "a07",
+  "text": "In my first ninety days I would learn the deployment pipeline, fix a few small bugs, and then take ownership of one service."
+ },
+ {
+  "id": "a08",
+  "text": "Kubernetes, Postgres and Kafka are the tools I use every day, and I've written Terraform for most of our staging setup."
+ },
+ {
+  "id": "a09",
+  "text": "One mistake I made was skipping load tests before a launch. We had an outage for forty minutes, and since then I always test at twice the expected traffic."
+ },
+ {
+  "id": "a10",
+  "text": "Sure. Outside work I mentor two junior developers and I run a small study group on distributed systems."
+ },
+ {
+  "id": "a11",
+  "text": "No, I think that covers it. Thank you for your time today."
+ }
+]

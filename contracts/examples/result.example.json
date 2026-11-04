@@ -1,0 +1,25 @@
+{
+  "version": 1,
+  "session_id": "3f2b9c1e8a7d4f60b5e2c9a1d0f4e7b2",
+  "end_reason": "completed",
+  "error": null,
+  "started_at": "2026-11-04T10:00:00Z",
+  "ended_at": "2026-11-04T10:04:30Z",
+  "turns": [
+    {"speaker": "interviewer", "text": "Hello Sam, thanks for joining. This is a mock interview for the Backend Engineer role at Northwind Freight, about twenty five minutes. Ready to start?", "start_ms": 1200, "end_ms": 9800, "question_id": null, "kind": "greeting"},
+    {"speaker": "candidate", "text": "Yes, ready.", "start_ms": 11000, "end_ms": 11900, "question_id": null, "kind": "greeting"},
+    {"speaker": "interviewer", "text": "Great. Tell me about yourself and what you have been working on recently.", "start_ms": 15600, "end_ms": 20100, "question_id": "q1", "kind": "main"},
+    {"speaker": "candidate", "text": "Hi, I'm Sam. I've spent six years building backend services, mostly in Python and Go, for a logistics company.", "start_ms": 21500, "end_ms": 28900, "question_id": "q1", "kind": "main"},
+    {"speaker": "interviewer", "text": "Thanks. Tell me about a project you are proud of and your own part in it.", "start_ms": 32700, "end_ms": 37400, "question_id": "q2", "kind": "main"},
+    {"speaker": "candidate", "text": "The project I'm proudest of is a routing service that cut delivery planning time from two hours to about ten minutes.", "start_ms": 38800, "end_ms": 46300, "question_id": "q2", "kind": "main"},
+    {"speaker": "interviewer", "text": "Thanks. How did you measure that drop in planning time?", "start_ms": 50100, "end_ms": 53600, "question_id": "q2", "kind": "follow_up"},
+    {"speaker": "candidate", "text": "We measured it by comparing planning logs for three months before and after the release.", "start_ms": 55000, "end_ms": 60400, "question_id": "q2", "kind": "follow_up"},
+    {"speaker": "interviewer", "text": "Thank you, Sam. That's the end of the interview.", "start_ms": 64200, "end_ms": 67300, "question_id": null, "kind": "closing"}
+  ],
+  "usage": [
+    {"kind": "llm", "provider": "anthropic", "model": "claude-haiku-5-5", "input_tokens": 1450, "cached_input_tokens": 9200, "cache_write_tokens": 2300, "output_tokens": 210, "seconds": null, "characters": null}
+  ],
+  "llm_cost_usd": 0.00063,
+  "audio": {"state": "ready", "format": "ogg_opus", "duration_ms": 270000, "bytes": 1080000},
+  "latency": {"n": 4, "median_reply_ms": 3750, "p90_reply_ms": 3900, "measured": "server", "resumes": 0}
+}

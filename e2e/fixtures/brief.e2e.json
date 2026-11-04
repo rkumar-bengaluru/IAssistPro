@@ -1,0 +1,74 @@
+{
+ "version": 1,
+ "role": {
+  "title": "Backend Engineer",
+  "company": "Northwind Freight",
+  "summary": "Northwind Freight (an invented company) builds real time routing for regional delivery fleets. The backend team owns Python and Go services on Postgres and Kafka. The role designs and runs services that plan thousands of routes a day, and works closely with product on new planning features. It needs solid distributed systems judgement and clear ownership of production services."
+ },
+ "candidate": {
+  "name": "Sam",
+  "summary": "Sam Rivera (an invented candidate) has six years of backend work at a logistics company, mostly in Python and Go. Sam led a team of four on a routing service that cut delivery planning time from two hours to about ten minutes. Sam uses Kubernetes, Postgres and Kafka daily and wrote Terraform for most of the staging setup. Sam mentors two junior developers. Frontend work is the area Sam has done least."
+ },
+ "questions": [
+  {
+   "id": "q1",
+   "text": "Tell me about yourself and what you have been working on recently.",
+   "kind": "motivation",
+   "probe_for": [
+    "a short career arc",
+    "current focus that fits the role"
+   ]
+  },
+  {
+   "id": "q2",
+   "text": "Tell me about a project you are proud of and your own part in it.",
+   "kind": "cv_deep_dive",
+   "probe_for": [
+    "own part versus the team's",
+    "how the result was measured"
+   ]
+  },
+  {
+   "id": "q3",
+   "text": "How would you design a service that has to plan thousands of delivery routes a day?",
+   "kind": "must_have",
+   "probe_for": [
+    "queueing and back pressure",
+    "data model",
+    "failure handling"
+   ]
+  },
+  {
+   "id": "q4",
+   "text": "Tell me about a time you disagreed with a colleague on a technical decision.",
+   "kind": "behavioural",
+   "probe_for": [
+    "situation, action, result",
+    "how the decision was made"
+   ]
+  },
+  {
+   "id": "q5",
+   "text": "This role touches some frontend work. How would you get up to speed there?",
+   "kind": "gap",
+   "probe_for": [
+    "honest about the gap",
+    "a concrete plan"
+   ]
+  }
+ ],
+ "limits": {
+  "max_minutes": 8,
+  "max_main_questions": 8,
+  "max_follow_ups": 1,
+  "max_llm_cost_usd": 0.05
+ },
+ "llm_prices_per_mtok": {
+  "input": 0.1,
+  "cached_input": 0.01,
+  "cache_write": 0.125,
+  "output": 0.5
+ },
+ "llm_model": "claude-haiku-5-5",
+ "language": "en"
+}

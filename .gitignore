@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Spike outputs (generated audio, recordings, results)
+spike/out/
+
+# IAssistPro service
+e2e/out/
+e2e/node_modules/
+e2e/test-results/
+e2e/playwright-report/
+.venv/
+!e2e/lib/
