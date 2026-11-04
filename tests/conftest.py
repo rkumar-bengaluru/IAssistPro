@@ -14,3 +14,21 @@ def _clean_env(monkeypatch):
             "DEBUG_STEREO_WAV", "LOG_LEVEL",
         }:
             monkeypatch.delenv(var, raising=False)
+
+
+CANARY = "ZEBRA-CANARY-7731"
+
+
+@pytest.fixture
+def captured_logs():
+    """A list sink at DEBUG, installed after setup_logging with the same filter. Yields a function returning the text."""
+    from loguru import logger
+
+    from iassistpro import logs
+
+    logs.setup_logging("INFO")
+    lines: list[str] = []
+    sink_id = logger.add(lambda m: lines.append(str(m)), level="DEBUG", filter=logs.log_filter, diagnose=False,
+                         backtrace=False, format="{name} | {level} | {message}{exception}")
+    yield lambda: "".join(lines)
+    logger.remove(sink_id)
