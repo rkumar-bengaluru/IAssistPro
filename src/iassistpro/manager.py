@@ -19,6 +19,7 @@ SWEEP_EVERY_S = 600
 HOUSEKEEPING_EVERY_S = 10
 CHECK_END_WAIT_S = 5.0  # POST /checks/{id}/end replies only once the lock is free (or after this, cancelling the check)
 CHECK_KEEP_S = 600  # a finished check's status is kept this long, then 404
+CHECK_CANCEL_WAIT_S = 1.0  # after cancelling a stuck check, how long to wait for it to stop before freeing the lock
 
 
 class ServiceError(Exception):
@@ -371,6 +372,10 @@ class SessionManager:
         async def run():
             try:
                 await runner(live, transport, self.s)
+            except asyncio.CancelledError:
+                if isinstance(live, CheckSession) and live.end_requested.is_set():
+                    live.on_end("ended_by_client", None)  # cancelled by end_check after End was asked for
+                raise
             except Exception as e:
                 log_event("runner_failed", error=type(e).__name__, **self._log_id(live))
                 live.on_end("error", f"runner_error:{type(e).__name__}")
@@ -501,6 +506,11 @@ class SessionManager:
                 except asyncio.TimeoutError:
                     log_event("check_end_timeout", check=check_id)
                     task.cancel()
+                    # Free the lock only once the check has stopped (its pipeline must not overlap the next
+                    # interview's), waiting a bounded time for a check that is slow to wind down.
+                    _done, pending = await asyncio.wait({task}, timeout=CHECK_CANCEL_WAIT_S)
+                    if pending:
+                        log_event("check_cancel_timeout", check=check_id)
                     check.on_end("ended_by_client", None)
                 except Exception:
                     pass  # the runner wrapper already recorded the failure

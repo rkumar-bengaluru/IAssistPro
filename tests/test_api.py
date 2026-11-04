@@ -547,3 +547,36 @@ async def test_checks_need_smallwebrtc(tmp_path):
     async with client:
         r = await client.post("/checks")
         assert r.status_code == 409 and r.json()["detail"]["code"] == "wrong_state"
+
+
+class StubbornCheckRunner(FakeCheckRunner):
+    """Ignores End, and takes 0.3 s to wind down after the first cancel (a pipeline shutting its transport)."""
+
+    def __init__(self):
+        super().__init__(stuck=True)
+        self.stopped = False
+
+    async def __call__(self, check, transport, s):
+        check.on_live()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            await asyncio.sleep(0.3)
+            self.stopped = True
+            raise
+
+
+async def test_end_check_waits_for_a_cancelled_check_to_stop(tmp_path, monkeypatch):
+    import iassistpro.manager
+
+    monkeypatch.setattr(iassistpro.manager, "CHECK_END_WAIT_S", 0.1)
+    runner = StubbornCheckRunner()
+    client, mgr, *_ = make(tmp_path, check_runner=runner)
+    async with client:
+        c = await create_check(client)
+        await offer(client, c)
+        await until(lambda: _check_is(client, c, "live"))
+        r = await client.post(f"/checks/{c['check_id']}/end")
+        assert r.status_code == 202 and r.json()["state"] == "ended"
+        assert runner.stopped   # the old check had stopped before the lock was freed
+        await create(client)
