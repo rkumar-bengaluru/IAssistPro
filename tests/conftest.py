@@ -32,3 +32,21 @@ def captured_logs():
                          backtrace=False, format="{name} | {level} | {message}{exception}")
     yield lambda: "".join(lines)
     logger.remove(sink_id)
+
+
+@pytest.fixture
+def settings():
+    from iassistpro.config import Settings
+
+    return Settings()
+
+
+@pytest.fixture
+def example_brief():
+    import json
+    from pathlib import Path
+
+    from iassistpro.contract import Brief
+
+    p = Path(__file__).resolve().parents[1] / "contracts" / "examples" / "brief.example.json"
+    return Brief.model_validate(json.loads(p.read_text()))
