@@ -10,12 +10,13 @@ import uuid
 from dataclasses import dataclass, field
 
 from pipecat.frames.frames import (
-    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, CancelFrame, EndFrame, InterruptionFrame,
+    BotStartedSpeakingFrame, BotStoppedSpeakingFrame, CancelFrame, EndFrame, InputAudioRawFrame, InterruptionFrame,
     LLMFullResponseEndFrame, LLMFullResponseStartFrame, LLMTextFrame, StartFrame, TranscriptionFrame,
     TTSSpeakFrame, TTSStartedFrame, TTSStoppedFrame, TTSTextFrame, UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame, VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.processors.frameworks.rtvi import RTVIClientMessageFrame, RTVIServerMessageFrame
 from pipecat.turns.user_start.external_user_turn_start_strategy import ExternalUserTurnStartStrategy
 from pipecat.turns.user_stop.external_user_turn_stop_strategy import ExternalUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -24,6 +25,7 @@ from pipecat.utils.time import time_now_iso8601
 from iassistpro.config import Settings
 from iassistpro.contract import AudioInfo, Brief, Latency
 from iassistpro.fake_llm import FakeInterviewerLLM
+from iassistpro.levels import InputLevelMonitor
 from iassistpro.pipeline import run_interview
 from iassistpro.store import SessionMeta, SessionStore, StateRecord
 
@@ -54,6 +56,23 @@ class FakeInput(Passthrough):
         await self.push_frame(TranscriptionFrame(text, "user", time_now_iso8601()))
         await asyncio.sleep(0.02)
         await self.push_frame(UserStoppedSpeakingFrame())
+
+    async def audio(self, seconds: float, amplitude: float | None) -> None:
+        """Push 10 ms 16 kHz mono frames: a 440 Hz sine of that full-scale amplitude, or all zeros (None)."""
+        import math
+        import struct
+
+        for f in range(round(seconds * 100)):
+            if amplitude is None:
+                pcm = bytes(320)
+            else:
+                pcm = struct.pack("<160h", *(int(amplitude * 32767 * math.sin(2 * math.pi * 440 * (f * 160 + i) / 16000))
+                                             for i in range(160)))
+            await self.push_frame(InputAudioRawFrame(audio=pcm, sample_rate=16000, num_channels=1))
+            await asyncio.sleep(0)
+
+    async def client_message(self, type: str) -> None:
+        await self.push_frame(RTVIClientMessageFrame(msg_id=uuid.uuid4().hex, type=type, data=None))
 
 
 class FakeTTS(FrameProcessor):
@@ -106,10 +125,13 @@ class FakeOutput(FrameProcessor):
         self.bot_stops = 0
         self.stop_event = asyncio.Event()
         self.bot_speaking = False
+        self.server_messages: list[dict] = []
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
+        if isinstance(frame, RTVIServerMessageFrame):
+            self.server_messages.append(frame.data)
         if isinstance(frame, TTSStartedFrame) and not self.bot_speaking:
             self.bot_speaking = True
             await self.push_frame(BotStartedSpeakingFrame())
@@ -182,7 +204,7 @@ def external_strategies():
 
 async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool_first_no_text=False,
                        end_after: int | None = None, disconnect_after: int | None = None, timeout=20.0,
-                       tts_speak_s: float = 0.05, llm=None):
+                       tts_speak_s: float = 0.05, llm=None, on_connected=None, monitor_clock=None):
     """Answer each interviewer reply in turn; optionally press End or disconnect after N answers.
 
     An answer given as a tuple of fragments ends its turn after each fragment; the next fragment starts as soon as
@@ -197,13 +219,17 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool
     transport = FakeTransport()
     llm = llm if llm is not None else FakeInterviewerLLM(brief, tool_first_no_text=tool_first_no_text)
     s = Settings(llm_provider="fake")
+    monitor = InputLevelMonitor(clock=monitor_clock, poll_s=0.01) if monitor_clock is not None else None
     task = asyncio.create_task(run_interview(hooks, transport, s, stt=Passthrough(), tts=FakeTTS(tts_speak_s), llm=llm,
-                                             turn_strategies=external_strategies(), vad=None, close_timeout_s=3.0))
+                                             turn_strategies=external_strategies(), vad=None, close_timeout_s=3.0,
+                                             level_monitor=monitor))
     out = transport.output()
 
     async def drive():
         await transport.input().start_event.wait()
         await transport.fire("on_client_connected")
+        if on_connected is not None:
+            await on_connected(transport)
         for i, a in enumerate(answers):
             await asyncio.wait_for(out.stop_event.wait(), 5)
             out.stop_event.clear()
@@ -236,6 +262,7 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool
     await asyncio.wait_for(task, timeout)
     driver.cancel()
     hooks.llm = llm
+    hooks.server_messages = out.server_messages
     return hooks
 
 

@@ -155,3 +155,40 @@ async def test_two_silent_reruns_force_the_closing(tmp_store, brief_3q, captured
     assert bot.text == CLOSE_BUDGET.format(name="Sam") and (bot.kind, bot.question_id) == ("closing", None)
     assert llm.runs == 3 and r.llm_cost_usd <= brief_3q.limits.max_llm_cost_usd   # the first run + 2 re-runs
     assert "llm_runs=3" in captured_logs()
+
+
+ANSWERS_3 = ["a1", "a2", "a2 more", "a3"]
+
+
+def _silent(hooks):
+    return [m for m in hooks.server_messages if m["type"] == "silent_input"]
+
+
+async def test_interview_sends_mic_level_messages(tmp_store, brief_3q):
+    hooks = await run_scripted(brief_3q, tmp_store, ANSWERS_3, on_connected=lambda t: t.input().audio(1.0, 0.1))
+    assert len([m for m in hooks.server_messages if m["type"] == "mic_level"]) >= 5
+
+
+async def test_interview_reports_digital_silence(tmp_store, brief_3q):
+    hooks = await run_scripted(brief_3q, tmp_store, ANSWERS_3, on_connected=lambda t: t.input().audio(3.2, None))
+    assert _silent(hooks) == [{"type": "silent_input", "reason": "zeros"}]
+    assert hooks.end_reason == "completed"
+
+
+async def test_interview_reports_no_audio_after_connect(tmp_store, brief_3q):
+    now = [100.0]
+
+    async def advance(_t):
+        now[0] += 3.5
+
+    hooks = await run_scripted(brief_3q, tmp_store, ANSWERS_3, on_connected=advance, monitor_clock=lambda: now[0])
+    assert _silent(hooks) == [{"type": "silent_input", "reason": "no_audio"}]
+
+
+async def test_level_messages_never_reach_the_transcript(tmp_store, brief_3q):
+    plain = await run_scripted(brief_3q, tmp_store, ANSWERS_3)
+    loud = await run_scripted(brief_3q, tmp_store, ANSWERS_3, on_connected=lambda t: t.input().audio(1.0, 0.1))
+    assert [m for m in loud.server_messages if m["type"] == "mic_level"]
+    def texts(h):
+        return [(t.speaker, t.kind, t.question_id, t.text) for t in tmp_store.result(h.session_id).turns]
+    assert texts(loud) == texts(plain)

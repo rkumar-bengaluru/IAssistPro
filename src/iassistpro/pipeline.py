@@ -15,6 +15,7 @@ from pipecat.workers.runner import WorkerRunner
 from .config import Settings
 from .contract import AudioInfo, Brief, EndReason, Latency, Turn, Usage
 from .director import InterviewDirector, InterviewState, RerunGate
+from .levels import InputLevelMonitor
 from .limits import CostMeter, LimitTracker
 from .logs import log_event
 from .prompt import JOIN_MESSAGE, TOOLS, build_system_prompt
@@ -56,7 +57,8 @@ def _usage_rows(frame: MetricsFrame, kind: str, provider: str, default_model: st
 
 
 async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None, tts=None, llm=None,
-                        turn_strategies=None, vad=None, close_timeout_s: float = 15.0) -> None:
+                        turn_strategies=None, vad=None, close_timeout_s: float = 15.0,
+                        level_monitor: InputLevelMonitor | None = None) -> None:
     brief, store, sid = hooks.brief, hooks.store, hooks.session_id
     t_setup = time.monotonic()
     meter = CostMeter(brief.llm_prices_per_mtok, brief.limits.max_llm_cost_usd)
@@ -116,7 +118,8 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
     sink = AudioSink(raw_path)
     sink.attach(buffer)
 
-    pipeline = Pipeline([transport.input(), stt, aggs.user(), director, llm, RerunGate(director), tts, transport.output(), buffer,
+    monitor = level_monitor if level_monitor is not None else InputLevelMonitor()
+    pipeline = Pipeline([transport.input(), monitor, stt, aggs.user(), director, llm, RerunGate(director), tts, transport.output(), buffer,
                          aggs.assistant()])
     worker = PipelineWorker(
         pipeline,
@@ -131,6 +134,7 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
     async def _connected(_t, _client):
         observer.start()
         log_event("client_connected", setup_ms=int(1000 * (time.monotonic() - t_setup)))
+        await monitor.start_watchdog()
         hooks.on_live()
         await buffer.start_recording()
         await worker.queue_frames([LLMRunFrame()])
@@ -157,6 +161,7 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
         log_event("pipeline_error", error=type(e).__name__)
     finally:
         watcher.cancel()
+        await monitor.stop_watchdog()
         builder.flush(int(1000 * observer.elapsed_s()))
         try:
             await buffer.stop_recording()  # no-op if the End/Cancel frame already flushed it
