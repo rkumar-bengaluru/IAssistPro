@@ -55,3 +55,36 @@ Design: `docs/superpowers/specs/2026-11-04-mock-interviewer-design.md`.
 | AD3 | No paid rating when the transcript has no candidate answer to a main question (e.g. dropped in the first minute): the session ends as "Nothing to rate", with the recording kept. | Nothing spends money for no result. |
 | AD4 | The service writes usage to its temp folder after each LLM turn, so a crashed session still reports what it spent. If no usage can be recovered, JobLens records the session cap as an estimated `LlmCall` (`estimated` flag, cost = cap, error "usage lost") and shows it in today's spend. | Money spent must never go missing from the meter; overstating is the safe side (as I6 in JobLens). |
 | AD5 | Every rating and question-prep point that cites a fact is checked mechanically against your materials and, for ratings, the transcript. A number, employer, tool or date found in neither becomes [CHECK] (same check as B5/O3 in JobLens, reused, not rewritten). | Truthfulness by check, not by prompt; one checker to maintain. |
+
+## Plan approval by the architect (2026-11-04, Release 1)
+
+Plan: `C:\2026\rkumar\JobLens\docs\superpowers\plans\2026-11-04-interview-prep.md`. Approved with changes.
+
+| # | Change or ruling | Why |
+|---|---|---|
+| AP1 | The idle check opens prod's database in a read-only transaction with a 5 s statement timeout, with a test that a write fails (Task 6). | It runs dev's code against prod; prod is only ever read there, as Q2 did for `promote`. |
+| AP2 | Migration 0015's downgrade refuses while `interview_prep` spend rows exist, instead of deleting them (Task 1). | Those rows are real money; a downgrade must never make spend go missing (AD4). |
+| AP3 | G2 and G3 confirmed: a point with a bad source is kept and marked [CHECK] with its reason, not dropped. The JD is **not** a fact source. | Prep points are advice, not CV text, so marking keeps their value. A JD tool you don't have is exactly what must be flagged; over-flagging is the safe side. |
+| AP4 | G9 and G11 confirmed: Regenerate sends the set it replaces (409 if stale) and asks first; a model failure gives a clear 502 and changes nothing. Two tabs pressing Prepare at once can still pay twice (the second result is refused as stale); accepted as rare. | No blind spend from a stale tab; a clear message. |
+| AP5 | G13 confirmed, with no override switch. "Review" passes count as idle. | A stopped prod has nothing in flight, and a pass waiting for your review isn't work in progress. |
+| AP6 | G14 confirmed: the live e2e (cap $0.30) runs only on a dev Interviewing application without a set, deletes what it made, and reports its cost. It never touches prod. | You see the real cost once; no data is left behind. |
+| AP7 | Planner note (a) accepted: the job page's "Cost so far" includes prep spend, because it is the job's true total and nothing compares it to the cap. Note (b) accepted: My CV's raw 500 stays out of scope. | Truthful totals; YAGNI. |
+| AP8 | G1, G4–G8, G10, G12 and G15 accepted as written. | They match the design (§7.1–7.2, AD1, A3). |
+
+## Builder's calls during implementation (release 1, JobLens)
+
+Branch `feat/interview-prep` in JobLens. The plan's guesses G1–G15 were built as written (confirmed by AP3–AP8); the
+calls below are the ones made while building.
+
+| # | Call | Why |
+|---|---|---|
+| BR1 | G1–G15 built as the plan states: two fixed questions by schema plus up to 12 more; bad-source points kept and marked [CHECK]; the JD is not a fact source; contact details stripped; prep only at Interviewing, edits at any status; one ordered list with headings; client-made own ids; set stores its CV label and cost; regenerate names the set it replaces; estimate = mean of the last 3 prep calls, else $0.08; 502 on model failure; idle check in Python, skipped when prod's app is down; live e2e skips without an Interviewing application; this log. | Plan and AP3–AP8. |
+| BR2 | A test that migration 0015's downgrade refuses while `interview_prep` spend exists (not in the plan). | AP2 made it a requirement; nothing else exercised it. |
+| BR3 | The v0 fallback needs a clean CV file too; a finished v0 without one falls through to the master. | There is nothing else to read; v0 started from the master anyway. |
+| BR4 | Empty questions and blank points are dropped before the 12-question and 5-point cuts; a question with text but no points is kept; a blank fixed question gets a default wording. | Keeps as many real questions as the model gave (spec: 10–14). |
+| BR5 | A point the model itself marked [CHECK] shows no reason line; the reason line comes only from the two mechanical checks. | The point's text already says what example is needed. |
+| BR6 | In `prod.ps1 restore`, the idle check runs before the release checkout (the first thing that touches prod), and `status` prints the check without refusing. | Nothing is touched while prod is busy. |
+| BR7 | An own question edited to blank stays on screen with "Type your question or remove it" and isn't saved until it has text; Regenerate is greyed out away from Interviewing. | The server refuses empty own questions; prep is Interviewing-only (G5). |
+| BR8 | Dev had no Interviewing application, so for the one live run the builder (not the test) moved dev's one Submitted job to Interviewing by SQL and put it back (status and `updated_at`) afterwards. Prod untouched. | The live run had to happen once; the test itself never changes a status (G14). |
+| BR9 | Live run on dev: 2 calls, $0.21 in total ($0.11 + $0.10), 14 questions per set; both sets deleted, spend kept. The first-ever estimate stays $0.08 (G10), so the very first button under-states a call by about 3 cents; after one call it shows the real mean. | Recorded so you know the real cost. |
+| BR10 | The job page's "Cost so far" already summed every phase, so AP7 needed no change; Discover's auto-promote estimate also sums every phase and was left as is. | Prep on a few jobs nudges that estimate up slightly: the safe side. |
