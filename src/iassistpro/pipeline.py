@@ -14,7 +14,7 @@ from pipecat.workers.runner import WorkerRunner
 
 from .config import Settings
 from .contract import AudioInfo, Brief, EndReason, Latency, Turn, Usage
-from .director import InterviewDirector, InterviewState
+from .director import InterviewDirector, InterviewState, RerunGate
 from .limits import CostMeter, LimitTracker
 from .logs import log_event
 from .prompt import JOIN_MESSAGE, TOOLS, build_system_prompt
@@ -116,7 +116,7 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
     sink = AudioSink(raw_path)
     sink.attach(buffer)
 
-    pipeline = Pipeline([transport.input(), stt, aggs.user(), director, llm, tts, transport.output(), buffer,
+    pipeline = Pipeline([transport.input(), stt, aggs.user(), director, llm, RerunGate(director), tts, transport.output(), buffer,
                          aggs.assistant()])
     worker = PipelineWorker(
         pipeline,
@@ -169,6 +169,6 @@ async def run_interview(hooks: SessionHooks, transport, s: Settings, *, stt=None
         reason = state.final_end_reason()
         log_event("session_end", reason=reason, turns=len(builder.turns), llm_runs=director.llm_runs,
                   spent_usd=round(meter.spent_usd, 6), median_reply_ms=hooks.latency.median_reply_ms)
-        hooks.on_end(reason, error)
+        hooks.on_end(reason, error or state.error_code)
     info = await encode(raw_path, store.dir(sid) / "audio.ogg", s.debug_stereo_wav)
     hooks.on_audio(info)

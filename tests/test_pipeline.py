@@ -1,10 +1,10 @@
 import pytest
 
 from iassistpro.contract import Limits
-from iassistpro.limits import CLOSE_BUDGET, CLOSE_ENDED
+from iassistpro.limits import CLOSE_BUDGET, CLOSE_ENDED, CLOSE_TIME, LimitTracker
 from iassistpro.store import SessionStore
 from tests.conftest import CANARY
-from tests.pipeline_harness import run_scripted
+from tests.pipeline_harness import ToolLoopLLM, run_scripted
 
 
 @pytest.fixture
@@ -121,3 +121,37 @@ async def test_resumes_are_counted_without_content(tmp_store, brief_3q, captured
     assert r.latency.resumes == 1
     logs = captured_logs()
     assert "turn_resumed gap_ms=" in logs and "a2 first" not in logs and "a2 rest" not in logs
+
+
+# ---- AF3: a tool-only re-run goes through the director like any other LLM run
+
+def last_bot(store, hooks):
+    return [t for t in store.result(hooks.session_id).turns if t.speaker == "interviewer"][-1]
+
+
+async def test_tool_only_rerun_is_refused_past_the_cap(tmp_store, brief_3q):
+    tiny = brief_3q.model_copy(update={"limits": brief_3q.limits.model_copy(update={"max_llm_cost_usd": 0.0001})})
+    llm = ToolLoopLLM(tiny)
+    hooks = await run_scripted(tiny, tmp_store, answers=[], llm=llm, timeout=10)
+    r = tmp_store.result(hooks.session_id)
+    assert hooks.end_reason == "budget" and last_bot(tmp_store, hooks).text == CLOSE_BUDGET.format(name="Sam")
+    assert llm.runs == 1 and r.llm_cost_usd <= 0.0001
+
+
+async def test_tool_only_rerun_respects_the_time_hard_stop(tmp_store, brief_3q, monkeypatch):
+    llm = ToolLoopLLM(brief_3q)
+    monkeypatch.setattr(LimitTracker, "time_state", lambda self, el: "hard_stop" if llm.runs >= 1 else "ok")
+    hooks = await run_scripted(brief_3q, tmp_store, answers=[], llm=llm, timeout=10)
+    assert hooks.end_reason == "time_limit" and last_bot(tmp_store, hooks).text == CLOSE_TIME.format(name="Sam")
+    assert llm.runs == 1
+
+
+async def test_two_silent_reruns_force_the_closing(tmp_store, brief_3q, captured_logs):
+    llm = ToolLoopLLM(brief_3q)
+    hooks = await run_scripted(brief_3q, tmp_store, answers=[], llm=llm, timeout=10)
+    r = tmp_store.result(hooks.session_id)
+    assert (hooks.end_reason, hooks.error) == ("error", "no_speech_loop")
+    bot = last_bot(tmp_store, hooks)
+    assert bot.text == CLOSE_BUDGET.format(name="Sam") and (bot.kind, bot.question_id) == ("closing", None)
+    assert llm.runs == 3 and r.llm_cost_usd <= brief_3q.limits.max_llm_cost_usd   # the first run + 2 re-runs
+    assert "llm_runs=3" in captured_logs()

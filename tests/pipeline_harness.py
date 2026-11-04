@@ -182,7 +182,7 @@ def external_strategies():
 
 async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool_first_no_text=False,
                        end_after: int | None = None, disconnect_after: int | None = None, timeout=20.0,
-                       tts_speak_s: float = 0.05):
+                       tts_speak_s: float = 0.05, llm=None):
     """Answer each interviewer reply in turn; optionally press End or disconnect after N answers.
 
     An answer given as a tuple of fragments ends its turn after each fragment; the next fragment starts as soon as
@@ -195,7 +195,7 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool
     store.write_state(hooks.session_id, StateRecord(state="waiting", started_at=datetime.now(timezone.utc),
                                                     audio=AudioInfo(state="pending")))
     transport = FakeTransport()
-    llm = FakeInterviewerLLM(brief, tool_first_no_text=tool_first_no_text)
+    llm = llm if llm is not None else FakeInterviewerLLM(brief, tool_first_no_text=tool_first_no_text)
     s = Settings(llm_provider="fake")
     task = asyncio.create_task(run_interview(hooks, transport, s, stt=Passthrough(), tts=FakeTTS(tts_speak_s), llm=llm,
                                              turn_strategies=external_strategies(), vad=None, close_timeout_s=3.0))
@@ -237,3 +237,27 @@ async def run_scripted(brief: Brief, store: SessionStore, answers: list, *, tool
     driver.cancel()
     hooks.llm = llm
     return hooks
+
+
+class ToolLoopLLM(FakeInterviewerLLM):
+    """A model stuck calling tools without ever speaking. Usage is reported before the tool call, so the
+    director's budget check sees this run's cost when the tool result asks for the re-run."""
+
+    def __init__(self, brief: Brief, *, on_run=None, **kwargs):
+        super().__init__(brief, **kwargs)
+        self.on_run = on_run or (lambda runs: None)
+
+    async def _respond(self, context) -> None:
+        from pipecat.frames.frames import FunctionCallFromLLM
+        from pipecat.metrics.metrics import LLMTokenUsage
+
+        self.runs += 1
+        self.on_run(self.runs)
+        await self.push_frame(LLMFullResponseStartFrame())
+        await self.start_llm_usage_metrics(LLMTokenUsage(
+            prompt_tokens=200, completion_tokens=40, total_tokens=1240, cache_read_input_tokens=1000,
+            cache_creation_input_tokens=0))
+        qid = self.brief.planned_questions[0].id
+        await self.run_function_calls([FunctionCallFromLLM(function_name="ask_question", tool_call_id=uuid.uuid4().hex,
+                                                           arguments={"question_id": qid}, context=context)])
+        await self.push_frame(LLMFullResponseEndFrame())

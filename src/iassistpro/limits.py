@@ -21,6 +21,7 @@ NOTE_BUDGET = "Close the interview in one sentence now, then call end_interview 
 CLOSE_TIME = "We're out of time, so let's stop here. Thank you, {name}, that's the end of the interview."
 CLOSE_BUDGET = "Let's stop here. Thank you, {name}, that's the end of the interview."
 CLOSE_ENDED = "Thanks, {name}. We'll stop here."
+CLOSE_NO_SPEECH = CLOSE_BUDGET  # the model kept calling tools without speaking (AF3)
 
 _COUNTS = ("input_tokens", "cached_input_tokens", "cache_write_tokens", "output_tokens")
 

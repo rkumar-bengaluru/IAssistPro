@@ -2,6 +2,8 @@
 
 The interviewer signals structure with tool calls spoken in the same reply as the text (§5.4, AS5), so tool
 results never re-run the LLM, except when a reply spoke nothing (otherwise the candidate would sit in silence).
+Such a re-run is pushed upstream by the assistant aggregator; RerunGate (after the LLM) hands it to the director,
+which applies the same hard stops, notes and run count as to any other run, and ends a silent tool loop (AF3).
 Notes to the model are appended as an extra text block on the last user message (append-only: caching holds).
 """
 
@@ -16,7 +18,7 @@ from pipecat.processors.frame_processor import FrameProcessor
 
 from .contract import Brief, EndReason
 from .limits import (
-    CLOSE_BUDGET, CLOSE_ENDED, CLOSE_TIME, NOTE_BUDGET, NOTE_LAST_MAIN, NOTE_NO_MORE_FOLLOW_UPS, NOTE_PREFIX,
+    CLOSE_BUDGET, CLOSE_ENDED, CLOSE_NO_SPEECH, CLOSE_TIME, NOTE_BUDGET, NOTE_LAST_MAIN, NOTE_NO_MORE_FOLLOW_UPS, NOTE_PREFIX,
     NOTE_TIME_UP, CostMeter, LimitTracker,
 )
 from .logs import log_event
@@ -25,6 +27,7 @@ TOOL_REASON_MAP: dict[str, EndReason] = {
     "completed": "completed", "candidate_request": "ended_by_candidate", "time_limit": "time_limit",
     "budget": "budget",
 }
+MAX_SILENT_RERUNS = 2  # consecutive tool-only re-runs with no speech before the fixed closing (AF3)
 
 
 @dataclass
@@ -52,6 +55,7 @@ class InterviewState:
         self._hard_reason: EndReason | None = None
         self._disconnected = False
         self._error = False
+        self.error_code: str | None = None
         self._notes_sent: set[str] = set()
 
     # ---- resume merge (AT2): a reply cancelled by a resumed answer must leave no trace in the state
@@ -128,8 +132,9 @@ class InterviewState:
             return "time_limit"
         return None
 
-    def mark_hard_stop(self, reason: EndReason) -> None:
+    def mark_hard_stop(self, reason: EndReason, error: str | None = None) -> None:
         self._hard_reason = reason
+        self.error_code = error
         self.ending = True
         self.current_question_id, self.current_kind = None, "closing"
         self.end_reason = self.final_end_reason()
@@ -222,6 +227,7 @@ class InterviewDirector(FrameProcessor):
         self.resume = ResumeTracker(resume_window_s)
         self.resumes = 0
         self._snapshot: dict | None = None
+        self._silent_reruns = 0
         self._merge_next = False
         self.state = state
         self.llm = llm
@@ -305,15 +311,14 @@ class InterviewDirector(FrameProcessor):
                 merge_resumed_turn(frame.context)
             self._snapshot = self.state.snapshot()
             self.resume.on_reply_started()
-            notes = self.state.notes_due(el)
-            if notes:
-                append_notes(frame.context, notes)
-                log_event("notes_added", n=len(notes))
+            self._silent_reruns = 0
+            self._add_notes(frame.context, el)
             self.llm_runs += 1
             await self.push_frame(frame, direction)
             return
         if isinstance(frame, BotStartedSpeakingFrame):
             self._bot_speaking = True
+            self._silent_reruns = 0
             if self.state.ending:
                 self._closing_spoke = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
@@ -333,6 +338,31 @@ class InterviewDirector(FrameProcessor):
             self.resume.on_user_stopped(self.elapsed())
         await self.push_frame(frame, direction)
 
+    def _add_notes(self, context, elapsed_s: float) -> None:
+        notes = self.state.notes_due(elapsed_s)
+        if notes:
+            append_notes(context, notes)
+            log_event("notes_added", n=len(notes))
+
+    async def allow_rerun(self, frame) -> bool:
+        """A tool result asked for another LLM run (pushed upstream past the director): same checks as a turn."""
+        if self.state.ending:
+            log_event("llm_run_dropped_while_ending")
+            return False
+        el = self.elapsed()
+        hard = self.state.hard_stop_due(el)
+        if hard:
+            await self._fixed_close(hard)
+            return False
+        self._silent_reruns += 1
+        if self._silent_reruns > MAX_SILENT_RERUNS:
+            await self._fixed_close("error", error="no_speech_loop")
+            return False
+        self._add_notes(frame.context, el)
+        self.llm_runs += 1
+        log_event("llm_rerun", n=self._silent_reruns)
+        return True
+
     async def _on_resume(self, gap_ms: int) -> None:
         """The candidate went on with the answer whose turn just ended: undo the cancelled reply (AT2)."""
         from .transcript import TurnResumedFrame
@@ -346,12 +376,13 @@ class InterviewDirector(FrameProcessor):
         await self._label(self.state.current_question_id, self.state.current_kind)
         self.on_progress(self.state.current_question_id, self.state.current_kind, self.state.question_number)
 
-    async def _fixed_close(self, reason) -> None:
+    async def _fixed_close(self, reason, error: str | None = None) -> None:
         from pipecat.frames.frames import TTSSpeakFrame
 
-        self.state.mark_hard_stop(reason)
-        text = (CLOSE_TIME if reason == "time_limit" else CLOSE_BUDGET).format(name=self.name_for_closing)
-        log_event("hard_stop", reason=reason)
+        self.state.mark_hard_stop(reason, error)
+        text = {"time_limit": CLOSE_TIME, "budget": CLOSE_BUDGET}.get(reason, CLOSE_NO_SPEECH)
+        text = text.format(name=self.name_for_closing)
+        log_event("hard_stop", reason=reason, **({"error": error} if error else {}))
         await self._label(None, "closing")
         self.on_progress(None, "closing", self.state.question_number)
         self._start_ending(fresh=True)
@@ -419,3 +450,23 @@ class InterviewDirector(FrameProcessor):
     async def cleanup(self):
         await self._stop_tasks()
         await super().cleanup()
+
+
+class RerunGate(FrameProcessor):
+    """Between the LLM and TTS. Pipecat's assistant aggregator pushes a tool result's re-run (run_llm=True) as an
+    upstream LLMContextFrame that never passes the director; this hands it to the director first (AF3)."""
+
+    def __init__(self, director: InterviewDirector, **kwargs):
+        super().__init__(**kwargs)
+        self.director = director
+
+    async def process_frame(self, frame, direction):
+        from pipecat.frames.frames import LLMContextFrame
+        from pipecat.processors.frame_processor import FrameDirection
+
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.UPSTREAM:
+            if await self.director.allow_rerun(frame):
+                await self.push_frame(frame, direction)
+            return
+        await self.push_frame(frame, direction)
