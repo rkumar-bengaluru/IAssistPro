@@ -175,3 +175,16 @@ Measured (synthetic voice, laptop on battery, Balanced plan, ~40% background hos
 - **Live spend: $0.0021** in total (two Haiku sessions; cap $0.30).
 - The free spoken e2e passed 3 of 4 runs after B8/B9 (Chromium 2/3, Edge 1/1). The failure was the same mid-answer
   turn split.
+
+## 2a acceptance ruling by the architect (2026-11-04)
+
+Results: `docs/latency-acceptance.md`. The fix is planned in `docs/superpowers/plans/2026-11-04-interviewer-turn-fix.md`.
+
+| # | Ruling | Why |
+|---|---|---|
+| AT1 | **Turn grace:** smart-turn's "complete" ends your turn only after **1.5 s** of continuous silence (`TURN_GRACE_S`). VAD still stops at 0.2 s, so Whisper starts at once and runs inside the grace. Speaking again within the grace keeps it one turn. | The miss wasn't speed: the interviewer jumped in at sentence-final pauses and talked over you, which you rank worse than a slower reply. Whisper already takes 1.4–2.2 s after you stop, so a 1.5 s grace costs almost nothing. |
+| AT2 | **Resume merge:** if you start speaking within **2 s** of a turn end, the interviewer's reply is cancelled and your two fragments become one answer. That means one context message, one transcript turn, no question or follow-up advance, and one LLM run. Resumes are counted (no content) in the result's `latency.resumes`. | It is the second line of defence when a pause outlasts the grace; it also removes the double LLM run that made the slow gaps. |
+| AT3 | **Acceptance #2 stays and becomes measurable:** the free spoken e2e must show 0 split answers and 0 talk-over in 4/4 runs (3 Chromium, 1 Edge). **Acceptance #3 becomes median ≤ 4.5 s, p90 ≤ 5.5 s** (browser, Piper + Haiku + base.en, 1.5 s grace). The real-voice check in 2b's live session still decides #2 for good. | You chose realism over raw speed. A real interviewer also takes 1–2 s before replying; the half-second of slack pays for never being cut off. |
+| AT4 | **Rerun conditions:** laptop plugged in, Best performance power mode (you set it; the builder doesn't change system settings), other builders paused, JobLens dev containers stopped by the coordinator (prod untouched), ≥ 4 GB free memory, background CPU < 15%. Two complete runs must pass; if one fails, one more run is allowed and 2 of 3 must pass. Every run is reported. | Run 1 was on battery, Balanced, 40% background CPU and low memory, and run 2 was killed for memory. The verdict must rest on complete runs in conditions like your real use. |
+| AT5 | **Not chosen:** a longer VAD `stop_secs` (it would delay Whisper and add the full wait to every reply), a minimum barge-in length, and hold-to-talk or "press Space when done". Push-to-talk stays a fallback only if your real-voice session still shows cut-offs after AT1–AT2. | A press-to-finish button breaks the realism you asked for, and the others either cost latency on every turn or don't stop the interviewer starting. |
+| AT6 | Tuning is limited to one step: if the free e2e still splits at 1.5 s, all four runs are repeated once at `TURN_GRACE_S=2.0`, and that value is adopted only if they pass; otherwise the builder reports back. The builder's fixes during 2a (Whisper safety net 4 s, Piper cache) are accepted. | APR5's no-silent-tuning rule, with one pre-approved step so a near miss doesn't need another round trip. |

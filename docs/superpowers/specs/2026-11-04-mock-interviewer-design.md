@@ -112,7 +112,8 @@ The interviewer knows nothing about JobLens. Any app able to send a brief can us
 
 - **Voice activity + end of turn:** Silero VAD (`stop_secs` 0.2) plus Pipecat's local smart-turn v3 (ONNX, no torch;
   spike: 12/12 turns, no cut-offs across 64 pauses); a silence threshold (~0.8 s) stays as a config fallback. Rupak must be able to pause to
-  think without being cut off: the end-of-turn rule errs towards waiting.
+  think without being cut off: the end-of-turn rule errs towards waiting. A turn ends only after a 1.5 s silence
+  grace (overlapping Whisper), and an answer resumed within 2 s of a turn end is merged back into the same turn (AT1, AT2).
 - **Interruptions:** Rupak speaking while the agent talks stops the agent's audio (barge-in). Headphones recommended
   in the UI to avoid the agent hearing itself (§5.3).
 - **STT:** `faster-whisper` `base.en`, CPU, int8, beam 1, `cpu_threads` 4 (spike; Pipecat's defaults of beam 5
@@ -421,8 +422,8 @@ JobLens:
 2. A 15–25 minute session runs without the agent cutting Rupak off mid-thought or talking over them (with headphones);
    it asks follow-ups that refer to what they actually said.
 3. Reply gap (end of your speech → first interviewer audio, measured in the browser) with the defaults (Piper +
-   Haiku, base.en): median ≤ 4.0 s and p90 ≤ 5.0 s on this laptop (AS3; the spike measured 3.9 / 4.0 s). The
-   original 3.5 s target is left to paid streaming speech later (R6).
+   Haiku, base.en, 1.5 s turn grace): median ≤ 4.5 s and p90 ≤ 5.5 s on this laptop, plugged in on Best performance
+   (AT3; was 4.0 / 5.0 s under AS3). The original 3.5 s target is left to paid streaming speech later (R6).
 4. After End, results appear within ~1 minute: scores, reasons, missed points, better answers with no invented facts,
    and the recording plays from each answer.
 5. Spend for the session appears in today's spend.
