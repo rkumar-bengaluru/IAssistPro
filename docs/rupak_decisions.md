@@ -232,3 +232,24 @@ Deferred minors from the 2a final review (not fixed; for you to decide):
 - `DELETE` while the audio is still pending (the encode may then write into a removed folder).
 - Unauthenticated 500 on a malformed offer body; the 404 it can return is not in the contract.
 - Race between the director's restore (resume merge) and a tool handler already scheduled for the cancelled reply.
+
+
+## Builder's calls during implementation (release 2b, JobLens)
+
+Branch `feat/mock-interview` in JobLens, from `feat/interview-prep`. The plan's guesses H1–H21 were built as written; the calls below are the ones made while building.
+
+| # | Call | Why |
+|---|---|---|
+| BM1 | H1–H21 built as the plan states. Contract assumptions C1–C10 were checked against 2a before Task 2 and again before Task 12: routes, field names and example files matched. | Plan rule (H21). |
+| BM2 | Brief strings are clipped to 2a's field limits and scrubbed with 2a's three contact patterns (email, URL, 10+ digit run) as well as Release 1's, before the final check. | So a brief JobLens sends is never refused with a 422. |
+| BM3 | The client raises two errors beyond the plan's: `InvalidBrief` (422) and `SignalRefused` (401/409/410 on the offer). A `result` answered 409 (`not_finished`) is treated as "down": the row stays ended and the next reconcile retries. | Each is mapped to a message the page can show, and nothing is lost. |
+| BM4 | If no master-CV paragraph has 25 or more words, the candidate summary falls back to the longest paragraph. | The plan's own test text needed it. |
+| BM5 | Service health `error` shows as "down", with "The interviewer isn't set up: …". A starting row that the service reports live gets `connected_at`. | JobLens shows only ready, loading or down; the usage estimate (H4) depends on `connected_at`. |
+| BM6 | A session the service failed that never connected ends `failed` ("The interview never connected, so nothing was recorded or spent"), not `nothing_to_rate`. Usage is recorded under a row lock. | It was never an interview, and nothing was spent. |
+| BM7 | The rating prompt lists only the main questions that were answered; the rest are stored as "not asked". | The model never rates a question that wasn't asked. |
+| BM8 | Start is also greyed out while another session is live, and the "at most" figure is rounded to cents. | The page shouldn't offer a Start the server would refuse. |
+| BM9 | The job page keeps checking the interviewer every 5 s while it is loading, so the line turns ready without a reload. | The plan's browser test expects it; it costs one GET every 5 s. |
+| BM10 | The live test opens its own browser with the session WAV as the microphone. The service's latency figures are read from the dev database before the session is deleted. | Playwright allows that browser option only once per file. The API doesn't expose latency. |
+| BM11 | Contract changes followed. AT2: `latency.resumes` is accepted (optional, default 0) and stored. AF1: a 409 busy reply carries no session id; the busy error no longer names one. AF4 (the service's audio `failed`) needed no change: the audio route answers 404, so JobLens marks the recording lost. Each change has a test. | `docs/contract-changes.md`. |
+| BM12 | Dev had no Interviewing application, so BR8 was repeated for this run. After a dev backup, the builder moved dev's one Submitted job to Interviewing by SQL and put it back afterwards (status and `updated_at`). Prod was not touched. | Same as BR8 (APR9). |
+| BM13 | **Live dev run, two runs, $0.26 in total:** prep $0.165, rating $0.090, interviewer LLM $0.002 (Haiku). Run 1 failed only acceptance #1, with the first question at 13.5 s. It was the first session after a cold interviewer start and a page-cache drop on a memory-tight laptop: about 8 s passed before the browser sent the offer, and the offer took 2.8 s on the server. Run 2 passed with the first question at 4.4 s (offer sent at 1.0 s, answered at 2.1 s). Both runs were rated, **Play from here** appeared, and everything made was deleted. Service reply latency: median 2630 / 2724 ms, p90 2717 / 2871 ms, `resumes` 0. | For you to judge acceptance #1. The first session after a cold start on a loaded machine can exceed 10 s. |
