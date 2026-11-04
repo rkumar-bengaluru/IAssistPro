@@ -273,3 +273,28 @@ Deferred minors (not fixed; for you to decide):
 | DM9 | `prod.ps1 up` appends the missing `.env.prod` keys before the idle check (harmless). |
 | DM10 | A session that failed without ever connecting doesn't delete the service's copy; the service's TTL cleans it up. |
 | DM11 | **Retry rating** checks the daily budget, not the room left under the hard cap. It is one call at most. |
+
+## Interview UX + audio check: design approval by the architect (2026-11-04)
+
+Design: `docs/superpowers/specs/2026-11-04-interview-ux-and-audio-check-design.md`. Approved with changes.
+
+### Rupak (2026-11-04, after the first dev sessions)
+
+| # | Decision |
+|---|---|
+| R11 | A table of questions with buttons such as Review, Accept and Reject, so browsing is easy. |
+| R12 | After Start mock interview and the mic permission, a page that tests audio both ways (you hear the interviewer, the interviewer hears you); only once it passes does the real interview start. |
+| R13 | Make the UI more user friendly: the job page is getting crowded. |
+| R14 | You'd rather not wear a headset. |
+
+### Rulings and changes
+
+| # | Change or ruling | Why |
+|---|---|---|
+| UX1 | **Status model approved** (`to_review`/`accepted`/`rejected`, accepted first, then to_review in order as the fallback), with two changes. (a) Old sets map at read time with no data rewrite: unticked → rejected, own → accepted, and other ticked → **to_review**, not accepted. (b) The Start panel states the mix: "Uses 5 accepted + 3 not yet reviewed questions". | Release 1 ticked everything by default, so calling those "accepted" would claim a review you never did. The fallback keeps the start one click; the line keeps it honest. |
+| UX2 | **Skip check** only for an **explicitly chosen** mic (a real device id, never "Default") that passed in this browser within 24 h. The chosen mic is remembered in the browser and preselected. | "Default" is exactly what silently moved to a virtual device on 4 Nov. A remembered real device makes the second interview a one-click start. |
+| UX3 | The "can't hear you" banner fires on `silent_input` only; the 12 s no-speech trigger is dropped. | Thinking quietly in a real room still sends noise. A banner after 12 s of thinking would nag you mid-interview, while digital silence is the actual fault. |
+| UX4 | Prepare runs in the background (202, then polling); the in-flight state stays in the app process and clears on restart; a second click gets 409. | 3.5 minutes is too long to hold a request open; nothing needs a table for a state that dies with the process (YAGNI). |
+| UX5 | No headset approved (echo cancellation, noise suppression, auto gain). If the live test shows self-interruption, the one pre-approved fallback is `BARGE_IN_MIN_S=0.8` for no-headset use, then a re-test. This narrows AT5's "no minimum barge-in" to the headset case. | R14. The interviewer hearing itself through the speakers is the main risk, and a short barge-in floor is the least visible fix. |
+| UX6 | Three tabs approved (Application / Interview prep / Mock interviews), plus a **Start mock interview** button in the Interview prep tab's header. | Less crowding (R13) without adding a click between reviewing and rehearsing. |
+| UX7 | The **service check mode is approved over a client-only check**: no LLM, $0, same lock and token flow. | You asked that the *interviewer* hears you and you hear it (R12). Only an end-to-end check covers the WebRTC path, UDP ports, STT and TTS; a local meter would pass while the call fails. |
