@@ -218,3 +218,6 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Spike outputs (generated audio, recordings, results)
+spike/out/

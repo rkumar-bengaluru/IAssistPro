@@ -1,0 +1,87 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Spike client</title></head>
+<body>
+<p id="status">idle</p>
+<audio id="bot" autoplay></audio>
+<script type="module">
+// Throwaway spike client: Pipecat JS client + SmallWebRTC or WebSocket transport.
+// Query: ?t=webrtc|ws&dur=<seconds before disconnect>
+import { PipecatClient } from "https://esm.sh/@pipecat-ai/client-js@1.16.0";
+import { SmallWebRTCTransport } from "https://esm.sh/@pipecat-ai/small-webrtc-transport@1.11.2?deps=@pipecat-ai/client-js@1.16.0";
+import { WebSocketTransport, ProtobufFrameSerializer } from "https://esm.sh/@pipecat-ai/websocket-transport@1.8.2?deps=@pipecat-ai/client-js@1.16.0";
+
+const q = new URLSearchParams(location.search);
+const kind = q.get("t") || "webrtc";
+const dur = Number(q.get("dur") || 60);
+const log = [];
+const T0 = performance.now();
+const now = () => Math.round(performance.now() - T0);
+const status = (s) => { document.getElementById("status").textContent = s; log.push({ t: now(), s }); console.log("[spike]", now(), s); };
+window.spike = { log, done: false, events: [] };
+
+// Energy-based activity on mic (fake file) and bot audio, sampled every 10 ms.
+const ctx = new AudioContext();
+function meter(stream, name) {
+  const src = ctx.createMediaStreamSource(stream);
+  const an = ctx.createAnalyser(); an.fftSize = 512; src.connect(an);
+  const buf = new Float32Array(an.fftSize);
+  let active = false, lastLoud = 0;
+  setInterval(() => {
+    an.getFloatTimeDomainData(buf);
+    let s = 0; for (const x of buf) s += x * x;
+    const rms = Math.sqrt(s / buf.length), t = now();
+    if (rms > 0.01) { lastLoud = t; if (!active) { active = true; window.spike.events.push({ who: name, ev: "start", t }); } }
+    else if (active && t - lastLoud > 400) { active = false; window.spike.events.push({ who: name, ev: "end", t: lastLoud }); }
+  }, 10);
+}
+
+const transport = kind === "ws"
+  ? new WebSocketTransport({ serializer: new ProtobufFrameSerializer(), recorderSampleRate: 16000, playerSampleRate: 24000 })
+  : new SmallWebRTCTransport({ waitForICEGathering: true });
+const client = new PipecatClient({
+  transport, enableMic: true, enableCam: false,
+  callbacks: {
+    onConnected: () => status("connected"),
+    onBotReady: () => status("bot-ready"),
+    onDisconnected: () => status("disconnected"),
+    onTransportStateChanged: (s) => status("transport:" + s),
+    onError: (e) => status("error:" + JSON.stringify(e?.data ?? e)),
+    onTrackStarted: (track, p) => {
+      status(`track:${p?.local ? "local" : "bot"}:${track.kind}`);
+      if (track.kind !== "audio") return;
+      const ms = new MediaStream([track]);
+      if (!p?.local) document.getElementById("bot").srcObject = ms;
+      meter(ms, p?.local ? "mic" : "bot");
+    },
+  },
+});
+
+try {
+  await ctx.resume();
+  status("connecting");
+  const t = performance.now();
+  if (kind === "ws") await client.connect({ wsUrl: `ws://${location.host}/ws` });
+  else await client.connect({ webrtcRequestParams: { endpoint: "/api/offer" } });
+  status(`connect-resolved ${Math.round(performance.now() - t)}ms`);
+} catch (e) { status("connect-failed:" + e); }
+
+setTimeout(async () => {
+  try { await client.disconnect(); } catch (e) {}
+  // Pair each mic speech end with the next bot audio start.
+  const ev = window.spike.events, gaps = [];
+  // For each bot audio start, the latest mic speech end before it (and after the previous bot start).
+  let prev = -1;
+  for (const b of ev.filter((x) => x.who === "bot" && x.ev === "start")) {
+    const ends = ev.filter((x) => x.who === "mic" && x.ev === "end" && x.t < b.t && x.t > prev);
+    prev = b.t;
+    if (ends.length) { const e = ends[ends.length - 1]; if (b.t - e.t < 12000) gaps.push(b.t - e.t); }
+  }
+  window.spike.gaps = gaps;
+  await fetch("/browser-result", { method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ kind, ua: navigator.userAgent, log, events: ev, gaps }) });
+  window.spike.done = true; status("done");
+}, dur * 1000);
+</script>
+</body>
+</html>
