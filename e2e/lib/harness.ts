@@ -65,7 +65,15 @@ export async function runSession(opts: { brief: any; wav: string; durS: number; 
   try {
     const page = await browser.newPage();
     page.on("console", (m) => { if (m.text().startsWith("[iassist]")) console.log(m.text()); });
-    await page.goto(`${BASE}/dev/client?session=${id}&token=${encodeURIComponent(connect.token)}&dur=${opts.durS}`);
+    const url = `${BASE}/dev/client?session=${id}&token=${encodeURIComponent(connect.token)}&dur=${opts.durS}`;
+    await page.goto(url);
+    // The client module comes from esm.sh; if its import stalls, the page never starts: reload it once.
+    try {
+      await page.waitForFunction(() => ((window as any).iassist?.log ?? []).length > 0, null, { timeout: 30_000 });
+    } catch {
+      console.log("[harness] client did not start in 30 s; reloading the page once");
+      await page.goto(url);
+    }
     if (opts.endAfterS) ender = setTimeout(() => { fetch(`${BASE}/sessions/${id}/end`, { method: "POST" }); }, opts.endAfterS * 1000);
     await page.waitForFunction(() => (window as any).iassist?.done, null, { timeout: (opts.durS + 90) * 1000, polling: 500 });
     const browserSide = await page.evaluate(() => {
