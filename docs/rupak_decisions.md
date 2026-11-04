@@ -100,3 +100,40 @@ Spike: `docs/spike-transport-latency.md` (commit 39bc097).
 | AS3 | **Acceptance #3 is now median ≤ 4.0 s and p90 ≤ 5.0 s** (browser-measured, Piper + Haiku + base.en). The interviewer is prompted to open each turn with a short clause. The check panel suggests plugging in and using the Best performance power mode. **No filler or backchannel sounds.** Paid streaming speech (the remaining route under 3.5 s) waits until the local results justify it (R6). | The spike reached 3.9 / 4.0 s and the cheap tricks can only help. A canned "mm-hm" fires on false turn ends and repeats robotically. Paid speech costs money on every session and needs pricing and a visible cost first. |
 | AS4 | **Transport: SmallWebRTC** with the aioice patch. aiortc/aioice are pinned exactly, with a canary test on the patched internals. WebSocket stays a config fallback (`TRANSPORT=websocket`). UDP ranges are 127.0.0.1-bound, 3 ports per stack: prod 40000–40002, dev 40010–40012. | 14/14 connects, plus the browser's echo cancellation. The fallback means a dependency upgrade that breaks the patch costs one setting, not a release. Separate ranges let both stacks run (A2). |
 | AS5 | **Design updates:** STT is `base.en`, int8, beam 1, 4 threads, and thread counts are settings (this replaces "all threads"; Docker still has all 12). Re-check `base.en` on your real voice in the live dev session; that recording stays local and is never committed (B2), and `small.en` is the fallback, re-measured against AS3. Turn detection is Silero (0.2 s) + smart-turn v3. Pipecat's `stop_frame_timeout_s` goes up to 10 s. Tool calls must not add an LLM round trip before speech. Logs run at INFO with a filter (the canary test stays). The recording is mono Ogg/Opus, encoded after the session; JobLens stores the transcript and usage first, and rating doesn't wait for the audio. | Each follows a measured result or a trap the spike found; the audio change keeps "results within ~1 minute" (acceptance #4) despite ~1 minute of encoding. |
+
+## Plan approval by the architect (2026-11-04, Release 2a/2b)
+
+Plans: 2a `docs/superpowers/plans/2026-11-04-interviewer-service.md` (IAssistPro), 2b `C:\2026\rkumar\JobLens\docs\superpowers\plans\2026-11-04-mock-interview.md`. Both approved with changes.
+
+| # | Change or ruling | Why |
+|---|---|---|
+| APR1 | **One contract, 2a's "Service interface" is the source of truth**; 2b's C1–C10 were rewritten to match it exactly. Changes to 2b: container port 8000 (not 8765; `JOBLENS_INTERVIEWER_URL=http://interviewer:8000`, host ports 8010/8110 → 8000). Create returns 201 with `expires_at`, and 409 `busy` also covers a *waiting* session; 503 `not_ready` reads as loading; health `error` gets its own line. The token goes in `X-Session-Token`, not Bearer, from JobLens's proxy server-side, so the browser never sees it. Status uses `question_number`/`questions_total`/`turn_kind` (not `current_kind`). The result is served for `ended` and `failed`, with `error`, `llm_cost_usd`, `audio.state` and nullable fields, and only `kind == "llm"` usage rows are priced. Audio pending is 409 `audio_pending` (not 202). Compose builds `target: runtime` and mounts an `interviewer_sessions` volume at `/data/sessions` (so a restart keeps usage, AD4). Examples are at `contracts/examples/`. The e2e WAV is generated (`e2e/out/session_live.wav`), not committed. 2a's interface now also states the RTVI captions, candidate-turn `question_id`, uncached `input_tokens` and the header rule. | Two plans written in parallel must not meet for the first time in the live test. |
+| APR2 | **Own questions go to the interviewer as kind `own`** (2a G1 kept; 2b H9 changed), with empty `probe_for`. 2b's `assert_brief_clean` also applies 2a's three contact patterns exactly. | Labelling your own question "behavioural" would be a small untruth to the interviewer for no gain. One rule on both sides means a brief JobLens sends is never refused at Start. |
+| APR3 | 2a G9 confirmed, with a test on the adapter's converted messages and a fallback (note appended to the same message's text). The JS header question doesn't matter for JobLens (APR1); `?token=` stays for the dev client only, with the access log off (G13). | The planner flagged both as unverified Pipecat behaviour; each now has a check and a way out. |
+| APR4 | 2a G5–G7 confirmed: the cost cap is hard (the A1/AD2 ceiling depends on it); time and follow-up limits are soft, steered by notes, with overruns counted. G11, G12 (no reconnect), G14 (Cartesia as the mapped paid TTS) and G16 confirmed. | A cap that can't stop speech mid-sentence is a fair trade for no extra round trip (AS5); only money needs a hard stop. |
+| APR5 | 2a's latency acceptance: one rerun allowed, no tuning; a miss comes to me with the breakdown. Confirmed. | Tuning to pass a test hides the real number you'll live with. |
+| APR6 | 2b branch ruling confirmed: `feat/mock-interview` from the tip of `feat/interview-prep`. Any Release 1 review fix lands on `feat/interview-prep` first and is merged into `feat/mock-interview`, never the other way round. | Release 1 must stay shippable on its own (A3). |
+| APR7 | 2b H5 (`record(..., cost=)`), H7 (automatic rating skips the soft gate; only the hard cap stops it; Retry checks the budget), H10 (rating fact sources = your materials + **your** turns only) and H18 (idle check skips a schema without `mock_sessions`) confirmed. | H7 is what A1/AD2 promised: the Start click priced the rating. H10 keeps the interviewer's words from becoming "facts" about you. |
+| APR8 | 2b H15 confirmed: JobLens supports SmallWebRTC only, so the `TRANSPORT=websocket` fallback is for standalone use. This narrows AS4: aioice is pinned, so the patch can only break on a deliberate upgrade, and the canary catches that first. | A WebSocket proxy in JobLens is work for a case that pinning prevents (YAGNI). |
+| APR9 | 2b H20 confirmed with one condition: take a dev `pg_dump` to `backups/` before the one-off dev status move, and put the status back in `finally`. Cap $0.80. | Same insurance as Q4; the test leaves your dev data as it found it. |
+| APR10 | Other guesses (2a G2–G4, G8, G10, G13, G15, G17–G20; 2b H1–H4, H6, H8, H11–H14, H16, H17, H19, H21) accepted as written. | They match the design and earlier rulings. |
+
+## Final review (Release 1, 2026-11-04)
+
+The final reviewer said "ready to merge"; the architect re-graded two findings to Important and both were fixed, each
+with a test that failed first.
+
+| # | Fix | Test |
+|---|---|---|
+| FR1 | The fact check took a My CV **question** as evidence ("Have you run Kubernetes in prod? Answer: no" let "Mention your Kubernetes experience" pass, and a quoted source could match the question). Now only the answers' own words count as evidence; the question still goes into the prompt for context. | `test_my_cv_question_text_is_not_evidence` |
+| FR2 | An own question saved just after a regenerate (from another tab, or while the new set arrived) was refused as stale and vanished silently. Now that save is put onto the new set and the page says so; if even that fails, it names the questions to add again. | vitest "own questions after a stale save"; e2e "keeps a question typed after another tab regenerated" |
+
+Deferred minors (not fixed; for you to decide):
+
+| # | Minor |
+|---|---|
+| DM1 | The idle check doesn't see a prep call in flight: if prod were redeployed during the ~30 s call, that call's spend could go unrecorded (small window). |
+| DM2 | In `prod.ps1 up`, the idle check runs before the backup; it could move to just after it. |
+| DM3 | Two tabs pressing Prepare at once both pay; the second result is refused as stale (accepted in AP4). |
+| DM4 | The phone pattern also strips 10+ digit figures (money, IDs) from the CV, so a point quoting one gets a false [CHECK]. |
+| DM5 | The email is stripped only by pattern, not also by matching the owner's known address. |
