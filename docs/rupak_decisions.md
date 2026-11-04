@@ -188,3 +188,23 @@ Results: `docs/latency-acceptance.md`. The fix is planned in `docs/superpowers/p
 | AT4 | **Rerun conditions:** laptop plugged in, Best performance power mode (you set it; the builder doesn't change system settings), other builders paused, JobLens dev containers stopped by the coordinator (prod untouched), ≥ 4 GB free memory, background CPU < 15%. Two complete runs must pass; if one fails, one more run is allowed and 2 of 3 must pass. Every run is reported. | Run 1 was on battery, Balanced, 40% background CPU and low memory, and run 2 was killed for memory. The verdict must rest on complete runs in conditions like your real use. |
 | AT5 | **Not chosen:** a longer VAD `stop_secs` (it would delay Whisper and add the full wait to every reply), a minimum barge-in length, and hold-to-talk or "press Space when done". Push-to-talk stays a fallback only if your real-voice session still shows cut-offs after AT1–AT2. | A press-to-finish button breaks the realism you asked for, and the others either cost latency on every turn or don't stop the interviewer starting. |
 | AT6 | Tuning is limited to one step: if the free e2e still splits at 1.5 s, all four runs are repeated once at `TURN_GRACE_S=2.0`, and that value is adopted only if they pass; otherwise the builder reports back. The builder's fixes during 2a (Whisper safety net 4 s, Piper cache) are accepted. | APR5's no-silent-tuning rule, with one pre-approved step so a near miss doesn't need another round trip. |
+
+## Turn-fix builder's calls and results (2026-11-04)
+
+Results: `docs/latency-acceptance.md` (turn-fix section). **AT3 met:**
+- Free e2e 4/4 with 0 splits and 0 talk-over.
+- Live browser median 2910.5 / 2933.5 ms and p90 3030 / 3094 ms, with 0 splits, in both runs.
+- Live spend for the turn fix was $0.0021. Including 2a, the total is $0.0042 against the $0.30 cap.
+
+| # | Call | Cost if wrong |
+|---|---|---|
+| TF1 | The grace counts silence from the audio frames themselves (VAD stop plus frame durations), not wall time. Smart-turn is wrapped and its stop is held until 1.5 s of silence. | If audio frames stopped arriving during silence, the count would stall. WebRTC sends frames continuously. |
+| TF2 | A resume needs two things: a reply already started and not yet heard in full, and new speech within 2 s of the turn end. | A resume that comes after a very short, finished reply counts as a new answer. |
+| TF3 | The director decides on a resume. It restores the interview state from that LLM run and merges the two fragments in the context. The transcript and the on-disk store drop the fragment and the cancelled reply (new `SessionStore.drop_last_turns`). | A tool call that lands after the restore would advance the interview once. |
+| TF4 | Each resume costs one cancelled LLM run, because the early turn end has already started it. Avoiding that run is the grace's job. | About $0.0001 per resume. No resumes happened in any run. |
+| TF5 | Fixes so the test harness behaves like the real pipeline: the fake TTS drops a stale stop, a resumed fragment interrupts, and the fake LLM replays its step on a merged re-run. | None (test-only). |
+| TF6 | The e2e reloads the client page once if the esm.sh import stalls for 30 s. Vendoring the client wasn't needed. Precheck before each run: Available MBytes ≥ 4096 and CPU < 15% averaged over 30 s, after dropping the docker-desktop page cache (coordinator-approved). | None. |
+| TF7 | Contract: the result gains an optional `latency.resumes` (a count, no content), plus the `TURN_GRACE_S` / `RESUME_WINDOW_S` settings (see `docs/contract-changes.md`). | None (additive). |
+
+The live runs logged 210 and 600 ms of talk-over. That isn't a live criterion and can't be placed, because the page
+events weren't saved. The 2b real-voice session should watch for it.

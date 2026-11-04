@@ -1,7 +1,71 @@
-# Latency acceptance (AS3), release 2a
+# Latency acceptance (AS3), release 2a and turn fix
 
 Date: 2026-11-04. Branch `feat/mock-interviewer`. Measured with `e2e/spoken.e2e.ts` (live test) and summarised by
 `scripts/latency_report.py`. No transcript text appears here.
+
+## Turn fix (rulings AT1–AT6), re-run 2026-11-04
+
+### Verdict
+
+**AT3 met.** Turn grace is 1.5 s (AT1) and the resume merge window is 2 s (AT2). Defaults were unchanged and AT6's
+2.0 s retry wasn't needed.
+- Acceptance #2: the free spoken e2e passed 4/4 runs (3 Chromium, 1 Edge) with 0 split answers and 0 talk-over.
+- Acceptance #3: both live runs passed, so no third run was needed.
+  - Browser median 2910.5 / 2933.5 ms against a bound of 4500.
+  - p90 3030 / 3094 ms against a bound of 5500.
+  - 0 splits.
+
+### Conditions (AT4)
+
+- Plugged in, Best performance (set by Rupak), JobLens dev containers stopped and other builders paused (by the
+  coordinator). Only the JobLens prod containers were running; they were untouched and idle.
+- Before each run, the docker-desktop WSL page cache was dropped, then the run was gated on two checks:
+  - Available MBytes ≥ 4096.
+  - Host CPU average < 15%, sampled every 2 s over 30 s.
+- Runs were one at a time, with one browser each, closed before the next run.
+- Image `sha256:a2baa5a4132e…`. Otherwise the configuration is the same as the 2a run below; the live brief and fake
+  microphone are unchanged.
+
+### Free spoken e2e (fake LLM, AT3 gate)
+
+| Run | Precheck (free MB / CPU avg) | Splits | Talk-over | LLM runs | Resumes | WER |
+|---|---|---|---|---|---|---|
+| chromium3 | 4660 / 9.7% | 0 | 0 ms | 7 | 0 | 0.059 |
+| chromium4 | 5170 / 11.1% | 0 | 0 ms | 7 | 0 | ≤ 0.059 |
+| chromium5 | 5387 / 7.4% | 0 | 0 ms | 7 | 0 | ≤ 0.059 |
+| msedge2 | 5226 / 13.7% | 0 | 0 ms | 7 | 0 | ≤ 0.059 |
+
+All four runs had a WER between 0.037 and 0.059. Seven LLM runs means the greeting plus 6 answers, with no double run
+for any answer. Browser gaps were 1.8–2.2 s, measured with the fake LLM. Earlier attempts that don't count:
+- chromium1 failed on a harness bug: it read `llm_runs` from stdout, but docker logs go to stderr. Even so, it had 0
+  splits and 0 talk-over.
+- chromium2's page never loaded because the esm.sh client import stalled. The harness now reloads the page once.
+- msedge1 passed, but its precheck CPU was 24.2%.
+- One rerun batch was stopped by the host for low memory.
+
+### Live runs (Haiku, $0.05 brief cap each)
+
+| Run | Precheck (free MB / CPU avg, max) | Browser n | Browser median / p90 | Server median / p90 | Splits | Talk-over | LLM runs | Resumes | First audio | Cache-read tokens | Cost | End |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 5341 / 14.5% | 12 | 2910.5 / 3030 ms | 2580 / 2699 ms | 0 | 210 ms | 13 | 0 | 5493 ms | 32,896 | $0.0012 | ended by candidate |
+| 2 | 5477 / 13.5%, 26% | 10 | 2933.5 / 3094 ms | 2582 / 2702 ms | 0 | 600 ms | 11 | 0 | 3421 ms | 29,174 | $0.0009 | time limit |
+
+- Each run's LLM count is the greeting plus one run per answer: no double runs, unlike 2a's three.
+- Talk-over is only a gate in the free e2e. The live runs did log some (210 and 600 ms), but the page's events weren't
+  saved, so they can't be placed. One possibility is the interviewer's closing or greeting overlapping a clip that
+  started on the fixed 14 s schedule (Haiku replies are longer than the fake LLM's). That is unconfirmed, and the 2b
+  real-voice session should check it.
+- Interviewer container, from `docker stats` every 2 s (100% = 1 core):
+  - Run 1: 92 samples, average 82%, peak 559%, memory peak 1077 MiB.
+  - Run 2: 78 samples, average 102%, peak 571%, memory peak 1248 MiB.
+- Live spend for the turn fix: **$0.0021**. Including 2a's $0.0021, the total is **$0.0042** against the $0.30 cap.
+
+`scripts/latency_report.py` now uses the AT3 bounds (4500 / 5500 ms). It fails a run with any split and prints
+splits, talk-over, LLM runs and resumes.
+
+---
+
+# Release 2a run (superseded by the turn fix above)
 
 ## Verdict
 
