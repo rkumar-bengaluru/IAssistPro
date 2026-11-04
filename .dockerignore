@@ -1,0 +1,12 @@
+.git
+.venv
+.superpowers
+spike
+e2e/node_modules
+e2e/out
+e2e/test-results
+e2e/playwright-report
+**/__pycache__
+.pytest_cache
+*.env
+.env

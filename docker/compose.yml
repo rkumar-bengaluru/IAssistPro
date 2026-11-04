@@ -1,0 +1,18 @@
+name: iassistpro
+
+services:
+  tests:
+    profiles: ["test"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+      target: dev
+    working_dir: /app
+    volumes:
+      - ..:/app
+      - interviewer_models:/models
+
+volumes:
+  interviewer_models:
+    name: iassist_models
+  interviewer_sessions:
