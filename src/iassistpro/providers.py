@@ -21,6 +21,15 @@ class _ModelCache:
     def __init__(self):
         self._whisper: dict = {}
         self._kokoro: dict = {}
+        self._piper: dict = {}
+
+    def piper(self, path, **kw):
+        key = str(path)
+        if key not in self._piper:
+            import piper
+
+            self._piper[key] = piper.PiperVoice.load(path, **kw)
+        return self._piper[key]
 
     def whisper(self, name: str, threads: int):
         key = (name, threads)
@@ -46,6 +55,7 @@ class _ModelCache:
     def clear(self) -> None:
         self._whisper.clear()
         self._kokoro.clear()
+        self._piper.clear()
 
 
 model_cache = _ModelCache()
@@ -111,17 +121,34 @@ class ProviderSpec:
     build: Callable[..., object]
 
 
+# Safety net for the turn-stop strategy: it ends the turn as soon as the finalized transcript of the last
+# segment arrives, and only falls back to this many seconds after the end of speech when none does. Pipecat's
+# 1.0 s default is shorter than base.en on a laptop CPU (1.2-2.2 s per segment when segments queue), which
+# closed turns without their last words and let the late transcript barge in as a new turn.
+WHISPER_TTFS_P99_S = 4.0
+
+
 def _build_whisper(s: Settings):
     from pipecat.services.whisper.stt import WhisperSTTService
 
     cls = _whisper_stt_class()
     return cls(beam=s.stt_beam, threads=s.stt_threads, device="cpu", compute_type="int8",
-               settings=WhisperSTTService.Settings(model=s.stt_model))
+               ttfs_p99_latency=WHISPER_TTFS_P99_S, settings=WhisperSTTService.Settings(model=s.stt_model))
+
+
+class _CachedPiperVoice:
+    """Stands in for piper.PiperVoice inside Pipecat's Piper service, so each session reuses one loaded voice."""
+
+    @staticmethod
+    def load(path, **kw):
+        return model_cache.piper(path, **kw)
 
 
 def _build_piper(s: Settings):
+    import pipecat.services.piper.tts as piper_tts
     from pipecat.services.piper.tts import PiperTTSService
 
+    piper_tts.PiperVoice = _CachedPiperVoice  # PiperTTSService.__init__ calls PiperVoice.load(path)
     return PiperTTSService(download_dir=Path(s.models_dir) / "piper", stop_frame_timeout_s=10.0,
                            settings=PiperTTSService.Settings(voice=s.tts_voice_resolved))
 

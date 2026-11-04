@@ -93,6 +93,41 @@ def test_whisper_model_is_shared(monkeypatch):
     model_cache.clear()
 
 
+def test_whisper_stt_safety_net_outlasts_cpu_transcription(monkeypatch):
+    # Turn end waits for Whisper's finalized transcript; the fallback timeout only fires when none comes.
+    # Pipecat's 1.0 s default is shorter than base.en on this CPU (1.2-2.2 s per queued segment), so the
+    # turn closed with the last segment's words missing and the late transcript barged in as a new turn.
+    import faster_whisper
+
+    from iassistpro.providers import WHISPER_TTFS_P99_S
+
+    monkeypatch.setattr(faster_whisper, "WhisperModel", lambda name, **kw: object())
+    model_cache.clear()
+    stt = make_stt(Settings())
+    assert WHISPER_TTFS_P99_S >= 3.0 and stt._ttfs_p99_latency == WHISPER_TTFS_P99_S
+    model_cache.clear()
+
+
+def test_piper_voice_is_loaded_once_and_shared(monkeypatch, tmp_path):
+    # Loading the voice took ~2 s on the event loop inside every offer (connect -> first question budget).
+    import piper
+
+    loads = []
+
+    class Voice:
+        config = type("C", (), {"sample_rate": 22050})()
+
+    monkeypatch.setattr(piper.PiperVoice, "load", staticmethod(lambda path, **kw: loads.append(str(path)) or Voice()))
+    monkeypatch.setenv("MODELS_DIR", str(tmp_path))
+    (tmp_path / "piper").mkdir()
+    (tmp_path / "piper" / "en_US-lessac-medium.onnx").write_bytes(b"x")
+    (tmp_path / "piper" / "en_US-lessac-medium.onnx.json").write_text("{}")
+    model_cache.clear()
+    a, b = make_tts(Settings()), make_tts(Settings())
+    assert len(loads) == 1 and a._voice is b._voice
+    model_cache.clear()
+
+
 def test_turn_strategies_smart_and_silence(monkeypatch):
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy, TurnAnalyzerUserTurnStopStrategy
 
