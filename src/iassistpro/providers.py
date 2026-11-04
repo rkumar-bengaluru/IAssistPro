@@ -258,7 +258,10 @@ def make_turn_strategies(s: Settings):
     if s.turn_stop == "smart":
         from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
-        stop = [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())]
+        from .turns import GraceUserTurnStopStrategy
+
+        smart = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())
+        stop = [GraceUserTurnStopStrategy(smart, grace_s=s.turn_grace_s)]
     else:
         stop = [SpeechTimeoutUserTurnStopStrategy(user_speech_timeout=max(0.0, s.silence_s - s.vad_stop_s))]
     return UserTurnStrategies(stop=stop), make_vad(s)

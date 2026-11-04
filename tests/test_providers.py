@@ -132,7 +132,11 @@ def test_turn_strategies_smart_and_silence(monkeypatch):
     from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy, TurnAnalyzerUserTurnStopStrategy
 
     strategies, vad = make_turn_strategies(Settings())
-    assert isinstance(strategies.stop[0], TurnAnalyzerUserTurnStopStrategy) and vad.params.stop_secs == 0.2
+    from iassistpro.turns import GraceUserTurnStopStrategy
+
+    stop = strategies.stop[0]
+    assert isinstance(stop, GraceUserTurnStopStrategy) and isinstance(stop.inner, TurnAnalyzerUserTurnStopStrategy)
+    assert stop._grace_ms == 1500 and vad.params.stop_secs == 0.2
     monkeypatch.setenv("TURN_STOP", "silence")
     strategies, _ = make_turn_strategies(Settings())
     assert isinstance(strategies.stop[0], SpeechTimeoutUserTurnStopStrategy)

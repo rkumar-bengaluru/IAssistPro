@@ -2,6 +2,7 @@
 
 from typing import Literal
 
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_VOICES = {"piper": "en_US-lessac-medium", "kokoro": "af_heart", "cartesia": ""}
@@ -28,6 +29,8 @@ class Settings(BaseSettings):
     tts_threads: int = 4
     turn_stop: Literal["smart", "silence"] = "smart"
     silence_s: float = 0.8
+    turn_grace_s: float = Field(1.5, ge=0.0, le=5.0)  # AT1: silence after speech before a COMPLETE ends the turn
+    resume_window_s: float = Field(2.0, ge=0.0, le=5.0)  # AT2: a resume this soon after a turn end is merged
     llm_provider: str = "anthropic"
     llm_model: str = "claude-haiku-5-5"
     models_dir: str = "/models"
