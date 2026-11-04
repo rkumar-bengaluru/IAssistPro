@@ -253,3 +253,23 @@ Branch `feat/mock-interview` in JobLens, from `feat/interview-prep`. The plan's 
 | BM11 | Contract changes followed. AT2: `latency.resumes` is accepted (optional, default 0) and stored. AF1: a 409 busy reply carries no session id; the busy error no longer names one. AF4 (the service's audio `failed`) needed no change: the audio route answers 404, so JobLens marks the recording lost. Each change has a test. | `docs/contract-changes.md`. |
 | BM12 | Dev had no Interviewing application, so BR8 was repeated for this run. After a dev backup, the builder moved dev's one Submitted job to Interviewing by SQL and put it back afterwards (status and `updated_at`). Prod was not touched. | Same as BR8 (APR9). |
 | BM13 | **Live dev run, two runs, $0.26 in total:** prep $0.165, rating $0.090, interviewer LLM $0.002 (Haiku). Run 1 failed only acceptance #1, with the first question at 13.5 s. It was the first session after a cold interviewer start and a page-cache drop on a memory-tight laptop: about 8 s passed before the browser sent the offer, and the offer took 2.8 s on the server. Run 2 passed with the first question at 4.4 s (offer sent at 1.0 s, answered at 2.1 s). Both runs were rated, **Play from here** appeared, and everything made was deleted. Service reply latency: median 2630 / 2724 ms, p90 2717 / 2871 ms, `resumes` 0. | For you to judge acceptance #1. The first session after a cold start on a loaded machine can exceed 10 s. |
+
+## Final review (Release 2b, 2026-11-04)
+
+No Critical findings. Two were fixed, each with a test that failed first. Backend suite after the fixes: 688 passed, 1 skipped; web tsc clean, vitest 92/92.
+
+| # | Fix | Test |
+|---|---|---|
+| FR3 | A session could stay at `ended` or `rating` until a restart. That happened when collection hit a down interviewer (only startup recovery retried it), when the result was unreadable, or when rating raised an unexpected error. The page then showed "collecting" for ever, Delete was refused, and prod's idle check blocked `prod.ps1 up`. Now an `ended` row is collected again by the session page's poll and by the job page's list, at most once at a time per session. An unreadable result or an unexpected collection error moves the row to **failed** with a clear message: the connected session's usage is estimated at the cap (AD4), whatever was saved stays, and the recording is still fetched. An unexpected rating error gives **Rating failed** with **Retry rating**. | `test_a_transient_down_during_collect_is_retried_by_reconcile`, `test_the_job_page_list_collects_an_ended_row`, `test_an_invalid_result_fails_the_session_and_keeps_the_recording`, `test_a_rating_exception_gives_rating_failed` |
+| FR4 | The rating's fact check took a My CV **question** as evidence, the same bug as FR1 in prep. Now only the answers' own words count, plus what you said in the session. | `test_rating_my_cv_question_is_not_evidence` |
+
+Deferred minors (not fixed; for you to decide):
+
+| # | Minor |
+|---|---|
+| DM6 | If creating a session times out, JobLens deletes its row while the service may still hold that session. Start then gets "busy" until the service drops the unconnected session (120 s). |
+| DM7 | A crash in the middle of recording a session's usage records those rows again on retry: spend is overcounted (the safe side). |
+| DM8 | The transcript in the rating prompt isn't passed through the contact scrub. The interviewer's model already heard it live. |
+| DM9 | `prod.ps1 up` appends the missing `.env.prod` keys before the idle check (harmless). |
+| DM10 | A session that failed without ever connecting doesn't delete the service's copy; the service's TTL cleans it up. |
+| DM11 | **Retry rating** checks the daily budget, not the room left under the hard cap. It is one call at most. |
