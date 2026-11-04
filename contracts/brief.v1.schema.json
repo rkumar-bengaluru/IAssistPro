@@ -1,0 +1,235 @@
+{
+  "$defs": {
+    "Candidate": {
+      "additionalProperties": false,
+      "properties": {
+        "name": {
+          "description": "First name only.",
+          "maxLength": 40,
+          "minLength": 1,
+          "pattern": "^[^\\d@/:]+$",
+          "title": "Name",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 3000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        }
+      },
+      "required": [
+        "name",
+        "summary"
+      ],
+      "title": "Candidate",
+      "type": "object"
+    },
+    "Limits": {
+      "additionalProperties": false,
+      "properties": {
+        "max_follow_ups": {
+          "default": 2,
+          "maximum": 3,
+          "minimum": 0,
+          "title": "Max Follow Ups",
+          "type": "integer"
+        },
+        "max_llm_cost_usd": {
+          "default": 0.5,
+          "exclusiveMinimum": 0,
+          "maximum": 2.0,
+          "title": "Max Llm Cost Usd",
+          "type": "number"
+        },
+        "max_main_questions": {
+          "default": 8,
+          "maximum": 15,
+          "minimum": 1,
+          "title": "Max Main Questions",
+          "type": "integer"
+        },
+        "max_minutes": {
+          "default": 25,
+          "maximum": 45,
+          "minimum": 1,
+          "title": "Max Minutes",
+          "type": "integer"
+        }
+      },
+      "title": "Limits",
+      "type": "object"
+    },
+    "Prices": {
+      "additionalProperties": false,
+      "description": "USD per million tokens.",
+      "properties": {
+        "cache_write": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Cache Write",
+          "type": "number"
+        },
+        "cached_input": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Cached Input",
+          "type": "number"
+        },
+        "input": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Input",
+          "type": "number"
+        },
+        "output": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Output",
+          "type": "number"
+        }
+      },
+      "required": [
+        "input",
+        "cached_input",
+        "cache_write",
+        "output"
+      ],
+      "title": "Prices",
+      "type": "object"
+    },
+    "Question": {
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "pattern": "^[A-Za-z0-9_-]{1,32}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "must_have",
+            "cv_deep_dive",
+            "gap",
+            "behavioural",
+            "motivation",
+            "own"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "probe_for": {
+          "items": {
+            "maxLength": 200,
+            "minLength": 1,
+            "type": "string"
+          },
+          "maxItems": 8,
+          "title": "Probe For",
+          "type": "array"
+        },
+        "text": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Text",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "text",
+        "kind"
+      ],
+      "title": "Question",
+      "type": "object"
+    },
+    "Role": {
+      "additionalProperties": false,
+      "properties": {
+        "company": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Company",
+          "type": "string"
+        },
+        "summary": {
+          "maxLength": 2000,
+          "minLength": 1,
+          "title": "Summary",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "company",
+        "summary"
+      ],
+      "title": "Role",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "No contact details are allowed in a brief: any string holding an email address, a URL (http(s):// or www.), or a run of digits, spaces and ().+- with 10 or more digits (a phone number) is refused. Year ranges such as 2019-2023 are fine.",
+  "properties": {
+    "candidate": {
+      "$ref": "#/$defs/Candidate"
+    },
+    "language": {
+      "const": "en",
+      "default": "en",
+      "title": "Language",
+      "type": "string"
+    },
+    "limits": {
+      "$ref": "#/$defs/Limits"
+    },
+    "llm_model": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z0-9.-]{1,64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Llm Model"
+    },
+    "llm_prices_per_mtok": {
+      "$ref": "#/$defs/Prices"
+    },
+    "questions": {
+      "items": {
+        "$ref": "#/$defs/Question"
+      },
+      "maxItems": 20,
+      "minItems": 1,
+      "title": "Questions",
+      "type": "array"
+    },
+    "role": {
+      "$ref": "#/$defs/Role"
+    },
+    "version": {
+      "const": 1,
+      "title": "Version",
+      "type": "integer"
+    }
+  },
+  "required": [
+    "version",
+    "role",
+    "candidate",
+    "questions",
+    "llm_prices_per_mtok"
+  ],
+  "title": "Brief",
+  "type": "object"
+}
