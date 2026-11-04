@@ -9,5 +9,6 @@ ENV_FILE="${JOBLENS_ENV:-C:/2026/rkumar/JobLens/.env}"
 ANTHROPIC_API_KEY="$(grep -m1 '^ANTHROPIC_API_KEY=' "$ENV_FILE" | cut -d= -f2- | tr -d '\r"'"'"'')"
 export ANTHROPIC_API_KEY
 export MSYS_NO_PATHCONV=1
-LLM_PROVIDER=anthropic docker compose -f docker/compose.yml up -d --build interviewer >/dev/null 2>&1 \n  || { echo "interviewer failed to start (re-run without the key: LLM_PROVIDER=fake docker compose -f docker/compose.yml up -d --build interviewer)"; exit 1; }
+LLM_PROVIDER=anthropic docker compose -f docker/compose.yml up -d --build interviewer >/dev/null 2>&1 \
+  || { echo "interviewer failed to start (re-run without the key: LLM_PROVIDER=fake docker compose -f docker/compose.yml up -d --build interviewer)"; exit 1; }
 echo "interviewer starting (key passed by name)"

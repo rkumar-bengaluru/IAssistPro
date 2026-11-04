@@ -137,3 +137,41 @@ Deferred minors (not fixed; for you to decide):
 | DM3 | Two tabs pressing Prepare at once both pay; the second result is refused as stale (accepted in AP4). |
 | DM4 | The phone pattern also strips 10+ digit figures (money, IDs) from the CV, so a point quoting one gets a false [CHECK]. |
 | DM5 | The email is stripped only by pattern, not also by matching the owner's known address. |
+
+## Builder's calls during implementation (release 2a, IAssistPro)
+
+Guesses G1–G20 from the 2a plan stand as confirmed by APR1–APR10 (G1 kind `own`, G2 contact guard, G3 limit bounds,
+G4 result fields, G5 hard cost cap, G6 time limit, G7 soft follow-up limits, G8 re-run only on silent tool calls,
+G9 notes as an extra block (the adapter keeps it, so the primary path is used), G10 session volume, G11 120 s unused
+expiry, G12 one-time token, G13 content-free logs, G14 Cartesia as the paid example, G15 fake LLM, G16 audio on disk,
+G17 ports 8770 / 40020–40022, G18 tests in the dev container, G19 health states, G20 Haiku prices). No contract change
+was made: the "Service interface" is as planned.
+
+Calls made while building (the full list, with what each costs if wrong, is in the branch's ledger):
+
+| # | Call | Why |
+|---|---|---|
+| B1 | Pipecat 1.15's current API: `PipelineWorker` + `WorkerRunner` and `EndWorkerFrame` (not the deprecated task/runner); RTVI left on for captions. | The plan's names are deprecated in 1.15. |
+| B2 | The director reads spoken text and usage from the LLM's synchronous `on_before_push_frame`, and labels travel in the frame stream (`TurnLabelFrame`), not through observers. | Observers are queue-fed in 1.15 and lag the tool handler. |
+| B3 | The budget hard stop is checked before each LLM run; the 1 s timer checks only the time hard stop. `/end` interrupts, waits 0.3 s, then speaks the fixed closing. | A timer budget stop would cut the candidate off right after a question; without the settle the closing merged with the cancelled reply. |
+| B4 | 422 errors keep only type/loc/msg; route templates may contain `{}` in logs; the uvicorn access log is off. | Validation context and input can hold brief text. |
+| B5 | An expired connect token is caught on use as well as by housekeeping. A session ending with `error` is state `failed`. | The lock frees even if housekeeping hasn't run. |
+| B6 | The reused `iassist_models` volume was root-owned (spike), so it was chowned once to the runtime user (uid 10001). | The non-root image could not write model caches. |
+| B7 | The dev client sends the token in `X-Session-Token` and as `?token=`. | The JS transport's header handling for PATCH is unverified (APR3: harmless for JobLens). |
+| B8 | Whisper's turn-stop safety net (`ttfs_p99_latency`) is 4 s, not Pipecat's 1 s. A finalized transcript still ends the turn at once. | base.en takes 1.2–2.2 s per queued segment on this CPU. The 1 s default closed turns without their last words, and the late transcript barged in as a new turn (free e2e WER 0.74 → 0.04). |
+| B9 | The Piper voice is loaded once and shared, like Whisper. | It was loaded on the event loop inside every offer (offer 3.6–7.0 s → 1.2–1.5 s; Edge missed acceptance #1 before). |
+| B10 | `scripts/up-live.sh` fixed (a broken line continuation made it always fail). | Found at the live run. |
+
+Measured (synthetic voice, laptop on battery, Balanced plan, ~40% background host load; details in
+`docs/latency-acceptance.md`):
+
+- **AS3 missed.** Run 1 browser median 3834 ms (pass) and p90 6916 ms (fail, bound 5000) over 10 gaps. The rerun was
+  cut off by host memory pressure and gave server-side numbers only (median 3026, p90 3810 ms). Nothing was tuned
+  (APR5). For the architect: all three slow gaps are turns where smart-turn ended the turn at a sentence pause
+  mid-answer, the reply was interrupted and the LLM ran twice. The spike's data shows the same (46 interruptions over
+  12 answers). Acceptance #2 ("never cut off mid-thought") is at risk on this evidence, and it needs the 2b live check
+  on a real voice.
+- **Acceptance #1 met** in standalone: create 105 ms + first audio 8.65 s.
+- **Live spend: $0.0021** in total (two Haiku sessions; cap $0.30).
+- The free spoken e2e passed 3 of 4 runs after B8/B9 (Chromium 2/3, Edge 1/1). The failure was the same mid-answer
+  turn split.
